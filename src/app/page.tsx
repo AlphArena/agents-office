@@ -33,12 +33,22 @@ const agentDefs: AgentDef[] = [
     skills: ["Node", "Python", "APIs", "Databases", "Auth"], description: "Backend engineer — APIs, databases, auth.",
     completedTasks: 1203, rating: 4.8, deskPos: { x: 10, y: 65 },
     thoughts: ["optimizing query", "designing schema", "auth flow"] },
+  { id: "victor", name: "Victor", role: "Auditor", rate: 0.08, spriteIndex: 5,
+    skills: ["Code Review", "Security", "Testing", "Standards"], description: "Auditor — reviews code, checks security, enforces standards.",
+    completedTasks: 412, rating: 5.0, deskPos: { x: 50, y: 55 },
+    thoughts: ["reviewing PR...", "found a vuln", "writing test cases"] },
+  { id: "zara", name: "Zara", role: "Web3", rate: 0.07, spriteIndex: 0,
+    skills: ["Solidity", "Anchor", "Smart Contracts", "DeFi", "NFTs"], description: "Web3 developer — Solidity, Anchor, smart contracts, DeFi.",
+    completedTasks: 738, rating: 4.9, deskPos: { x: 65, y: 55 },
+    thoughts: ["writing Solidity", "testing on devnet", "gas optimization"] },
 ];
 
 // Bench positions (lounge area — bottom right)
+// Lounge — spread across bottom of the office
 const benchPositions = [
-  { x: 72, y: 72 }, { x: 78, y: 72 }, { x: 84, y: 72 },
-  { x: 75, y: 80 }, { x: 81, y: 80 },
+  { x: 25, y: 82 }, { x: 35, y: 82 }, { x: 45, y: 82 },
+  { x: 55, y: 82 }, { x: 65, y: 82 }, { x: 75, y: 82 },
+  { x: 85, y: 82 },
 ];
 
 const orchestratorPos = { x: 45, y: 42 };
@@ -172,7 +182,7 @@ export default function Home() {
       setChat((p) => [...p, { role: "nova", text: data.text }]);
 
       // If Atlas delegated to someone, send the message to that agent too
-      if (data.delegatedTo && data.delegatedAgentId) {
+      if (data.delegatedTo) {
         const agentId = data.delegatedTo;
         const agent = agentDefs.find((a) => a.id === agentId);
         if (agent) {
@@ -180,16 +190,21 @@ export default function Home() {
           setTimeout(() => setOrchestratorBubble(""), 2500);
           assignTask(agentId, msg.slice(0, 30));
 
-          setThinking(agent.name);
-
-          const agentRes = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: msg, agentId: data.delegatedAgentId, channelId }),
-          });
-          const agentData = await agentRes.json();
-          setThinking(null);
-          setChat((p) => [...p, { role: "agent", text: agentData.text, agentName: agent.name }]);
+          if (data.delegatedResponse) {
+            // Response already came back from DELEGATE_TASK
+            setChat((p) => [...p, { role: "agent", text: data.delegatedResponse, agentName: agent.name }]);
+          } else if (data.delegatedAgentId) {
+            // Need to ask the agent directly
+            setThinking(agent.name);
+            const agentRes = await fetch("/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message: msg, agentId: data.delegatedAgentId, channelId }),
+            });
+            const agentData = await agentRes.json();
+            setThinking(null);
+            setChat((p) => [...p, { role: "agent", text: agentData.text, agentName: agent.name }]);
+          }
         }
       }
     } catch {
@@ -237,12 +252,30 @@ export default function Home() {
             {/* Room label */}
             <div className="absolute top-1 left-5 z-20 text-[8px] text-[#8b8ba0]/40 uppercase tracking-widest">engineering</div>
 
-            {/* Lounge label */}
-            <div className="absolute text-[7px] text-[#8b8ba0]/30 uppercase tracking-widest" style={{ left: "72%", top: "64%" }}>lounge</div>
+            {/* Lounge area — bottom strip */}
+            <div className="absolute bg-[#8b4513]/8 border-t border-[#8b4513]/10" style={{ left: "0%", top: "76%", width: "100%", height: "24%" }} />
+            <div className="absolute text-[7px] text-[#8b8ba0]/30 uppercase tracking-widest" style={{ left: "5%", top: "77%" }}>lounge</div>
 
-            {/* Benches */}
-            <div className="absolute bg-[#5c4a32] rounded-sm border border-[#4a3a25]" style={{ left: "70%", top: "74%", width: "70px", height: "10px" }} />
-            <div className="absolute bg-[#5c4a32] rounded-sm border border-[#4a3a25]" style={{ left: "73%", top: "82%", width: "50px", height: "10px" }} />
+            {/* Couch left */}
+            <div className="absolute bg-[#4a3828] rounded border border-[#3a2a1a]" style={{ left: "22%", top: "84%", width: "80px", height: "12px" }}>
+              <div className="absolute -top-[4px] left-0 w-full h-[4px] bg-[#5c4a32] rounded-t border border-b-0 border-[#4a3a25]" />
+            </div>
+
+            {/* Couch right */}
+            <div className="absolute bg-[#4a3828] rounded border border-[#3a2a1a]" style={{ left: "52%", top: "84%", width: "80px", height: "12px" }}>
+              <div className="absolute -top-[4px] left-0 w-full h-[4px] bg-[#5c4a32] rounded-t border border-b-0 border-[#4a3a25]" />
+            </div>
+
+            {/* Coffee table */}
+            <div className="absolute bg-[#6b5a42] rounded-sm border border-[#5a4a32]" style={{ left: "40%", top: "86%", width: "30px", height: "16px" }} />
+
+            {/* Vending machine */}
+            <div className="absolute" style={{ left: "85%", top: "80%" }}>
+              <div className="w-[20px] h-[28px] bg-[#3a3a4a] rounded-sm border border-[#4a4a5a]">
+                <div className="w-[12px] h-[8px] bg-[#1a3a5c] mx-auto mt-[3px] rounded-[1px]" />
+                <div className="w-1 h-1 bg-emerald-400 rounded-full mx-auto mt-[4px]" />
+              </div>
+            </div>
 
             {/* Desks */}
             {agentDefs.map((a) => (
@@ -264,7 +297,7 @@ export default function Home() {
             </div>
 
             {/* Plants */}
-            {[{ x: 2, y: 5 }, { x: 92, y: 5 }, { x: 60, y: 88 }, { x: 92, y: 88 }].map((p, i) => (
+            {[{ x: 2, y: 5 }, { x: 92, y: 5 }, { x: 18, y: 78 }, { x: 48, y: 78 }].map((p, i) => (
               <div key={i} className="absolute" style={{ left: `${p.x}%`, top: `${p.y}%` }}><Plant /></div>
             ))}
 
@@ -277,9 +310,9 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Rug under lounge */}
+            {/* Rug under meeting table */}
             <div className="absolute bg-[#8b4513]/10 border border-[#8b4513]/5 rounded-sm"
-              style={{ left: "68%", top: "66%", width: "110px", height: "80px" }} />
+              style={{ left: "72%", top: "58%", width: "90px", height: "60px" }} />
 
             {/* Orchestrator */}
             <div className="absolute agent-clickable"
@@ -360,9 +393,9 @@ export default function Home() {
         </section>
 
         {/* Right panel — Chat + Payments */}
-        <aside className="hidden md:flex flex-col w-[280px] border-l border-[#2a2a3a] bg-[#0f0f1a]">
+        <aside className="hidden md:flex flex-col w-[280px] border-l border-[#2a2a3a] bg-[#0f0f1a] min-h-0 overflow-hidden">
           {/* Chat with Atlas */}
-          <div className="flex-1 flex flex-col border-b border-[#2a2a3a]">
+          <div className="flex-1 flex flex-col border-b border-[#2a2a3a] min-h-0">
             <div className="px-3 py-2 border-b border-[#2a2a3a] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-[10px]">👑</span>
@@ -385,7 +418,7 @@ export default function Home() {
                 + new chat
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 scrollbar-thin scrollbar-thumb-[#2a2a3a] scrollbar-track-transparent">
               {chat.length === 0 && (
                 <p className="text-[10px] text-[#3a3a4a] italic text-center py-4">
                   Tell Atlas what you need built...

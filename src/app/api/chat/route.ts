@@ -2,20 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API_BASE = "http://72.62.176.85:3003";
 const USER_ID = "11111111-1111-1111-1111-111111111111";
-
 const ATLAS_ID = "8bd28d90-f59e-0ecb-828f-fecb287d3a0a";
 
-const AGENTS: Record<string, string> = {
-  alex: "64542dba-bb81-0fd4-86e0-cf4f319567c7",
-  luna: "baaf10f1-b483-0977-a616-3141ffd45a62",
-  mia: "3aa06745-f0af-0361-b73e-af8315d72561",
-  rex: "fbcb8622-9d6e-04c8-b68b-f1bc7afd05a4",
-  sam: "265dc298-e876-0361-b7e4-07e746c90f39",
-  victor: "b6877f3b-c660-0b25-afb9-10b73ade3a30",
-  zara: "3e08adeb-e59f-0076-bf8e-6510fd82289f",
-};
-
-async function sendToAgent(agentId: string, message: string, channelId: string): Promise<string> {
+async function callAgent(agentId: string, message: string, channelId: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/messaging/channels/${channelId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -37,7 +26,16 @@ async function sendToAgent(agentId: string, message: string, channelId: string):
     }),
   });
   const data = await res.json();
-  return data.agentResponse?.text || "No response";
+  return data.agentResponse?.text || "";
+}
+
+async function getAgentIdByName(name: string): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/api/agents`);
+  const data = await res.json();
+  const agent = data.data?.agents?.find(
+    (a: { name: string }) => a.name.toLowerCase() === name.toLowerCase()
+  );
+  return agent?.id || null;
 }
 
 export async function POST(req: NextRequest) {
@@ -49,22 +47,66 @@ export async function POST(req: NextRequest) {
 
   const cid = channelId || crypto.randomUUID();
 
+  // Direct agent request (skip Atlas)
   if (agentId) {
-    const text = await sendToAgent(agentId, message, cid);
-    return NextResponse.json({ text, agentId });
+    const text = await callAgent(agentId, message, cid);
+    return NextResponse.json({ text: text || "No response", agentId });
   }
 
-  const atlasResponse = await sendToAgent(ATLAS_ID, message, cid);
+  // Step 1: Call Atlas
+  const atlasRaw = await callAgent(ATLAS_ID, message, cid);
 
-  const mentionedAgent = Object.keys(AGENTS).find((name) =>
-    atlasResponse.toLowerCase().includes(name)
-  );
+  // Step 2: Try to parse delegation JSON from Atlas's response
+  let delegation: { delegate?: string; task?: string } | null = null;
+  let atlasText = atlasRaw;
+
+  // Atlas might return: "Some text {"delegate": "Sam", ...}" or just the JSON
+  const jsonMatch = atlasRaw.match(/\{[\s\S]*"delegate"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      delegation = JSON.parse(jsonMatch[0]);
+      // Clean Atlas text — remove the JSON part
+      atlasText = atlasRaw.replace(jsonMatch[0], "").trim();
+      if (!atlasText) {
+        atlasText = `Delegating to ${delegation?.delegate}...`;
+      }
+    } catch {
+      // Not valid JSON, treat as regular text
+    }
+  }
+
+  // No delegation — return Atlas's response directly
+  if (!delegation?.delegate) {
+    return NextResponse.json({
+      text: atlasText || "No response",
+      agentName: "Atlas",
+      delegatedTo: null,
+      delegatedResponse: null,
+    });
+  }
+
+  // Step 3: Find the delegated agent's ID
+  const targetId = await getAgentIdByName(delegation.delegate);
+
+  if (!targetId) {
+    return NextResponse.json({
+      text: atlasText,
+      agentName: "Atlas",
+      delegatedTo: delegation.delegate.toLowerCase(),
+      delegatedResponse: `Could not find agent: ${delegation.delegate}`,
+    });
+  }
+
+  // Step 4: Call the delegated agent with the task
+  const agentCid = crypto.randomUUID();
+  const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
+  const agentResponse = await callAgent(targetId, taskMsg, agentCid);
 
   return NextResponse.json({
-    text: atlasResponse,
-    agentId: ATLAS_ID,
+    text: atlasText,
     agentName: "Atlas",
-    delegatedTo: mentionedAgent || null,
-    delegatedAgentId: mentionedAgent ? AGENTS[mentionedAgent] : null,
+    delegatedTo: delegation.delegate.toLowerCase(),
+    delegatedAgentId: targetId,
+    delegatedResponse: agentResponse || "No response from agent",
   });
 }
