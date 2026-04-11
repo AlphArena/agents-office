@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+/* Pixel art rendering */
+* { image-rendering: pixelated; }
+
+.pixel-perfect {
+  image-rendering: pixelated;
+  -ms-interpolation-mode: nearest-neighbor;
+}
+
+/* Floor */
+.office-floor {
+  background:
+    repeating-conic-gradient(#ddd8d0 0% 25%, #d2cdc5 0% 50%) 0 0 / 32px 32px;
+}
+
+/* Wall */
+.office-wall {
+  background: linear-gradient(180deg, #6b5e4f 0%, #5c5043 60%, #4a3f35 100%);
+}
+
+.office-wall-top {
+  background: linear-gradient(180deg, #8b7e6f 0%, #7a6d5e 100%);
+}
+
+/* Smooth movement */
+.agent-move {
+  transition: left 2.5s ease-in-out, top 2.5s ease-in-out;
+}
+
+@keyframes pixel-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes pixel-idle {
+  0%, 49% { transform: scaleX(1); }
+  50%, 100% { transform: scaleX(-1); }
+}
+
+@keyframes pixel-typing {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes blink-led {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes steam-rise {
+  0% { transform: translateY(0); opacity: 0.6; }
+  100% { transform: translateY(-12px); opacity: 0; }
+}
+
+@keyframes bubble-pop {
+  from { opacity: 0; transform: translateX(-50%) scale(0.5) translateY(4px); }
+  to { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+}
+
+@keyframes notification-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.pixel-bob { animation: pixel-bob 1.5s steps(2) infinite; }
+.pixel-idle { animation: pixel-idle 4s steps(1) infinite; }
+.pixel-typing { animation: pixel-typing 0.4s steps(2) infinite; }
+.blink-led { animation: blink-led 1.5s steps(1) infinite; }
+.steam-rise { animation: steam-rise 2s ease-out infinite; }
+.bubble-pop { animation: bubble-pop 0.2s ease-out; }
+.notification-in { animation: notification-in 0.25s ease-out; }
+
+/* Agent hover */
+.agent-clickable {
+  cursor: pointer;
+  transition: filter 0.1s;
+}
+
+.agent-clickable:hover {
+  filter: brightness(1.3) drop-shadow(0 0 4px rgba(255,255,255,0.3));
+}
+
+/* Scanline overlay for retro feel */
+.scanline-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 2px,
+    rgba(0,0,0,0.02) 2px,
+    rgba(0,0,0,0.02) 4px
+  );
+  pointer-events: none;
+  z-index: 50;
+}
