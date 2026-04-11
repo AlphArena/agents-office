@@ -15,11 +15,12 @@ const AGENTS: Record<string, string> = {
   zara: "3e08adeb-e59f-0076-bf8e-6510fd82289f",
 };
 
-async function sendToAgent(agentId: string, message: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/messaging/channels/${agentId}/messages`, {
+async function sendToAgent(agentId: string, message: string, channelId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/messaging/channels/${channelId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      channelId,
       author_id: USER_ID,
       content: message,
       message_server_id: "00000000-0000-0000-0000-000000000000",
@@ -40,22 +41,21 @@ async function sendToAgent(agentId: string, message: string): Promise<string> {
 }
 
 export async function POST(req: NextRequest) {
-  const { message, agentId } = await req.json();
+  const { message, agentId, channelId } = await req.json();
 
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
-  // If a specific agent is requested, send directly
+  const cid = channelId || crypto.randomUUID();
+
   if (agentId) {
-    const text = await sendToAgent(agentId, message);
+    const text = await sendToAgent(agentId, message, cid);
     return NextResponse.json({ text, agentId });
   }
 
-  // Otherwise, send to Atlas (orchestrator) first
-  const atlasResponse = await sendToAgent(ATLAS_ID, message);
+  const atlasResponse = await sendToAgent(ATLAS_ID, message, cid);
 
-  // Check if Atlas mentioned any agent name — detect delegation
   const mentionedAgent = Object.keys(AGENTS).find((name) =>
     atlasResponse.toLowerCase().includes(name)
   );

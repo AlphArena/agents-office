@@ -92,7 +92,8 @@ export default function Home() {
   const [balance, setBalance] = useState(1.0);
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [thinking, setThinking] = useState<string | null>(null); // null = not thinking, string = who's thinking
+  const [thinking, setThinking] = useState<string | null>(null);
+  const [channelId, setChannelId] = useState(() => crypto.randomUUID());
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Init all agents as idle
@@ -161,7 +162,7 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, channelId }),
       });
 
       const data = await res.json();
@@ -179,13 +180,12 @@ export default function Home() {
           setTimeout(() => setOrchestratorBubble(""), 2500);
           assignTask(agentId, msg.slice(0, 30));
 
-          // Show thinking for the delegated agent
           setThinking(agent.name);
 
           const agentRes = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: msg, agentId: data.delegatedAgentId }),
+            body: JSON.stringify({ message: msg, agentId: data.delegatedAgentId, channelId }),
           });
           const agentData = await agentRes.json();
           setThinking(null);
@@ -363,9 +363,27 @@ export default function Home() {
         <aside className="hidden md:flex flex-col w-[280px] border-l border-[#2a2a3a] bg-[#0f0f1a]">
           {/* Chat with Atlas */}
           <div className="flex-1 flex flex-col border-b border-[#2a2a3a]">
-            <div className="px-3 py-2 border-b border-[#2a2a3a] flex items-center gap-2">
-              <span className="text-[10px]">👑</span>
-              <span className="text-[11px] text-white font-bold">Chat with Atlas</span>
+            <div className="px-3 py-2 border-b border-[#2a2a3a] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px]">👑</span>
+                <span className="text-[11px] text-white font-bold">Chat with Atlas</span>
+              </div>
+              <button
+                onClick={() => {
+                  setChannelId(crypto.randomUUID());
+                  setChat([]);
+                  setAgentStates((prev) => {
+                    const reset: Record<string, "idle" | "working" | "done"> = {};
+                    Object.keys(prev).forEach((k) => { reset[k] = "idle"; });
+                    return reset;
+                  });
+                  setAgentTasks({});
+                  setBubbles({});
+                }}
+                className="text-[9px] text-[#5a5a6a] hover:text-white border border-[#2a2a3a] hover:border-[#4a4a6a] px-2 py-0.5 rounded transition-colors"
+              >
+                + new chat
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
               {chat.length === 0 && (
