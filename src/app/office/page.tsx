@@ -165,71 +165,133 @@ export default function Home() {
 
   const [sageContext, setSageContext] = useState<string | null>(null);
 
+  // Call a single agent directly via the API
+  async function callSingleAgent(agentId: string, message: string): Promise<string> {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, agentId, channelId }),
+    });
+    const data = await res.json();
+    return data.text || "";
+  }
+
   async function handleChat() {
     const msg = chatInput.trim();
     if (!msg) return;
     setChatInput("");
-
     setChat((p) => [...p, { role: "user", text: msg }]);
-    setThinking("Sage");
 
     try {
-      // Build request — if sageContext exists, we're answering Sage's questions
-      const body: Record<string, string | null> = { message: msg, channelId };
+      // ── If we're answering Sage's questions ──
       if (sageContext) {
-        body.sageContext = sageContext;
-      }
+        setThinking("Sage");
+        const contextMsg = `Original request: ${sageContext}\nAdditional details: ${msg}\n\nProduce the IMPROVED PROMPT now. Start with "IMPROVED PROMPT:". Do not ask more questions.`;
+        const sageResponse = await callSingleAgent(
+          "c3bd776c-4465-037f-9c7a-bf94dfba78d9",
+          contextMsg,
+        );
+        setThinking(null);
 
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+        // Extract improved prompt
+        const improvedMatch = sageResponse.match(/IMPROVED PROMPT:\s*([\s\S]*?)(?:ASSUMPTIONS:|$)/i);
+        const curatedMessage = improvedMatch ? improvedMatch[1].trim() : sageResponse;
 
-      const data = await res.json();
-      setThinking(null);
+        // Clean questions from the improved prompt
+        const cleanPrompt = curatedMessage
+          .replace(/(?:could you|can you|what|which|do you)[^.?]*\?/gi, "")
+          .replace(/\(e\.g\.[^)]*\)/gi, "")
+          .replace(/\s{2,}/g, " ")
+          .trim();
 
-      // ── Step: Sage is asking questions ──
-      if (data.step === "sage_questions") {
-        setSageContext(data.originalMessage || msg);
-        setChat((p) => [...p, { role: "agent", text: data.sageResponse, agentName: "Sage" }]);
+        if (cleanPrompt) {
+          setChat((p) => [...p, { role: "agent", text: cleanPrompt, agentName: "Sage" }]);
+        }
+
+        setSageContext(null);
+
+        // Now send to Atlas
+        setThinking("Atlas");
+        const atlasRes = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: cleanPrompt || curatedMessage, step: "atlas" }),
+        });
+        const atlasData = await atlasRes.json();
+        setThinking(null);
+
+        showAtlasResults(atlasData);
         return;
       }
 
-      // ── Step: Complete pipeline ──
-      setSageContext(null); // reset Sage context
+      // ── First message: send to Sage ──
+      setThinking("Sage");
+      const sageResponse = await callSingleAgent(
+        "c3bd776c-4465-037f-9c7a-bf94dfba78d9",
+        msg,
+      );
+      setThinking(null);
 
-      // Show Sage's curated version
-      if (data.curatedMessage) {
-        setChat((p) => [...p, { role: "agent", text: data.curatedMessage, agentName: "Sage" }]);
+      // Check if Sage is asking questions or gave an improved prompt
+      const hasImproved = /IMPROVED PROMPT:/i.test(sageResponse);
+      const hasQuestions = /\?\s*$/m.test(sageResponse);
+
+      if (!hasImproved && hasQuestions) {
+        // Sage is asking questions — show them and wait
+        setSageContext(msg);
+        setChat((p) => [...p, { role: "agent", text: sageResponse, agentName: "Sage" }]);
+        return;
       }
 
-      // Show Atlas delegation info
-      if (data.delegations && data.delegations.length > 0) {
-        const names = data.delegations.map((d: { delegate: string }) => d.delegate).join(" + ");
-        setOrchestratorBubble(`→ ${names}`);
-        setTimeout(() => setOrchestratorBubble(""), 3000);
+      // Sage gave improved prompt or just text — extract and send to Atlas
+      const improvedMatch = sageResponse.match(/IMPROVED PROMPT:\s*([\s\S]*?)(?:ASSUMPTIONS:|$)/i);
+      const curatedMessage = improvedMatch ? improvedMatch[1].trim() : (sageResponse || msg);
 
-        setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
+      if (curatedMessage !== msg) {
+        setChat((p) => [...p, { role: "agent", text: curatedMessage, agentName: "Sage" }]);
       }
 
-      // Show each agent's response
-      if (data.agentResponses) {
-        for (const agentRes of data.agentResponses) {
-          const agent = agentDefs.find((a) => a.name.toLowerCase() === agentRes.agent.toLowerCase());
-          if (agent) {
-            assignTask(agent.id, agentRes.task?.slice(0, 30) || "working");
-          }
-          const text = agentRes.error ? `Error: ${agentRes.error}` : agentRes.response;
-          setChat((p) => [...p, { role: "agent", text, agentName: agentRes.agent }]);
-        }
-      } else if (data.text) {
-        setChat((p) => [...p, { role: "nova", text: data.text }]);
-      }
+      setThinking("Atlas");
+      const atlasRes = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: curatedMessage, step: "atlas" }),
+      });
+      const atlasData = await atlasRes.json();
+      setThinking(null);
 
+      showAtlasResults(atlasData);
     } catch {
       setThinking(null);
       setChat((p) => [...p, { role: "nova", text: "Error: could not reach the agents" }]);
+    }
+  }
+
+  function showAtlasResults(data: {
+    delegations?: { delegate: string; task?: string }[];
+    agentResponses?: { agent: string; task?: string; response: string; error?: string }[];
+    text?: string;
+  }) {
+    // Show Atlas delegation info
+    if (data.delegations && data.delegations.length > 0) {
+      const names = data.delegations.map((d) => d.delegate).join(" + ");
+      setOrchestratorBubble(`→ ${names}`);
+      setTimeout(() => setOrchestratorBubble(""), 3000);
+      setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
+    }
+
+    // Show each agent's response
+    if (data.agentResponses) {
+      for (const agentRes of data.agentResponses) {
+        const agent = agentDefs.find((a) => a.name.toLowerCase() === agentRes.agent.toLowerCase());
+        if (agent) {
+          assignTask(agent.id, agentRes.task?.slice(0, 30) || "working");
+        }
+        const text = agentRes.error ? `Error: ${agentRes.error}` : agentRes.response;
+        setChat((p) => [...p, { role: "agent", text, agentName: agentRes.agent }]);
+      }
+    } else if (data.text) {
+      setChat((p) => [...p, { role: "nova", text: data.text }]);
     }
   }
 
