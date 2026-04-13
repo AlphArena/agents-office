@@ -183,79 +183,12 @@ export default function Home() {
     setChat((p) => [...p, { role: "user", text: msg }]);
 
     try {
-      // ── If we're answering Sage's questions ──
-      if (sageContext) {
-        setThinking("Sage");
-        const contextMsg = `Original request: ${sageContext}\nAdditional details: ${msg}\n\nProduce the IMPROVED PROMPT now. Start with "IMPROVED PROMPT:". Do not ask more questions.`;
-        const sageResponse = await callSingleAgent(
-          "c3bd776c-4465-037f-9c7a-bf94dfba78d9",
-          contextMsg,
-        );
-        setThinking(null);
-
-        // Extract improved prompt
-        const improvedMatch = sageResponse.match(/IMPROVED PROMPT:\s*([\s\S]*?)(?:ASSUMPTIONS:|$)/i);
-        const curatedMessage = improvedMatch ? improvedMatch[1].trim() : sageResponse;
-
-        // Clean questions from the improved prompt
-        const cleanPrompt = curatedMessage
-          .replace(/(?:could you|can you|what|which|do you)[^.?]*\?/gi, "")
-          .replace(/\(e\.g\.[^)]*\)/gi, "")
-          .replace(/\s{2,}/g, " ")
-          .trim();
-
-        if (cleanPrompt) {
-          setChat((p) => [...p, { role: "agent", text: cleanPrompt, agentName: "Sage" }]);
-        }
-
-        setSageContext(null);
-
-        // Now send to Atlas
-        setThinking("Atlas");
-        const atlasRes = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: cleanPrompt || curatedMessage, step: "atlas" }),
-        });
-        const atlasData = await atlasRes.json();
-        setThinking(null);
-
-        showAtlasResults(atlasData);
-        return;
-      }
-
-      // ── First message: send to Sage ──
-      setThinking("Sage");
-      const sageResponse = await callSingleAgent(
-        "c3bd776c-4465-037f-9c7a-bf94dfba78d9",
-        msg,
-      );
-      setThinking(null);
-
-      // Check if Sage is asking questions or gave an improved prompt
-      const hasImproved = /IMPROVED PROMPT:/i.test(sageResponse);
-      const hasQuestions = /\?\s*$/m.test(sageResponse);
-
-      if (!hasImproved && hasQuestions) {
-        // Sage is asking questions — show them and wait
-        setSageContext(msg);
-        setChat((p) => [...p, { role: "agent", text: sageResponse, agentName: "Sage" }]);
-        return;
-      }
-
-      // Sage gave improved prompt or just text — extract and send to Atlas
-      const improvedMatch = sageResponse.match(/IMPROVED PROMPT:\s*([\s\S]*?)(?:ASSUMPTIONS:|$)/i);
-      const curatedMessage = improvedMatch ? improvedMatch[1].trim() : (sageResponse || msg);
-
-      if (curatedMessage !== msg) {
-        setChat((p) => [...p, { role: "agent", text: curatedMessage, agentName: "Sage" }]);
-      }
-
+      // ── Send directly to Atlas (skip Sage) ──
       setThinking("Atlas");
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: curatedMessage, step: "atlas" }),
+        body: JSON.stringify({ message: msg, step: "atlas" }),
       });
       const atlasData = await atlasRes.json();
       setThinking(null);
