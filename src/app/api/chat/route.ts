@@ -20,6 +20,19 @@ const AGENT_IDS: Record<string, string> = {
 
 // ── Call agent via ElizaOS API ────────────────────────────────────────
 
+async function callAgentWithTimeout(agentId: string, message: string, timeoutMs: number = 60000, channelId?: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await callAgent(agentId, message, channelId);
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === "AbortError") return "";
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callAgent(agentId: string, message: string, channelId?: string): Promise<string> {
   const cid = channelId || crypto.randomUUID();
   const res = await fetch(`${API_BASE}/api/messaging/channels/${cid}/messages`, {
@@ -163,11 +176,29 @@ export async function POST(req: NextRequest) {
     }
 
     const sageCid = crypto.randomUUID();
-    const sageRaw = await callAgent(SAGE_ID, sageMessage, sageCid);
+    const sageRaw = await callAgentWithTimeout(SAGE_ID, sageMessage, 45000, sageCid);
+    // If Sage didn't respond (timeout/error), skip to Atlas
+    if (!sageRaw) {
+      const atlasCid = crypto.randomUUID();
+      const atlasRaw = await callAgent(ATLAS_ID, message, atlasCid);
+      const delegations = parseAtlasDelegations(atlasRaw);
+      if (delegations.length === 0) {
+        delegations.push({ delegate: routeByKeywords(message), task: message });
+      }
+      const agentResponses = await executeDelegations(delegations, message);
+      return NextResponse.json({
+        step: "complete",
+        atlasResponse: atlasRaw,
+        delegations,
+        agentResponses,
+        text: formatResponses(agentResponses),
+      });
+    }
+
     const parsed = parseSageResponse(sageRaw);
 
     if (parsed.type === "questions") {
-      // Sage is asking questions — return them to the frontend
+      // Sage is asking questions — return them to the frontend and STOP
       return NextResponse.json({
         step: "sage_questions",
         sageResponse: sageRaw,
