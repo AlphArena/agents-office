@@ -222,9 +222,9 @@ export function Plant({ className = "" }: { className?: string }) {
   return <PixelSprite pixels={plantPixels} className={className} />;
 }
 
-export function AgentSprite({ agentIndex, className = "" }: { agentIndex: number; className?: string }) {
-  const config = agentConfigs[agentIndex % agentConfigs.length];
-  return <PixelSprite pixels={agentPixels(config.skin, config.shirt, config.hair)} className={className} />;
+export function AgentSprite({ agentIndex, className = "", scale = 1 }: { agentIndex: number; className?: string; scale?: number }) {
+  const config = agentConfigs[Math.abs(agentIndex) % agentConfigs.length];
+  return <PixelSprite pixels={agentPixels(config.skin, config.shirt, config.hair)} className={className} scale={scale} />;
 }
 
 export function OrchestratorSprite({ className = "", scale = 1 }: { className?: string; scale?: number }) {

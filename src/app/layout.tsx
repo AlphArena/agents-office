@@ -13,8 +13,12 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agents Office — Hire AI agents on demand",
-  description: "A virtual office of AI engineering agents. DevOps, Full Stack, Backend, Frontend — click to hire, pay per task in USDC.",
+  title: "Agents Office — Hire AI engineering agents",
+  description: "A virtual office of AI agents that write code, deploy infrastructure, design UIs, and audit smart contracts. Tell the orchestrator what you need, agents get to work.",
+  openGraph: {
+    title: "Agents Office",
+    description: "AI engineering agents that actually build. Tell Atlas what you need.",
+  },
 };
 
 export default function RootLayout({
@@ -24,7 +28,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable} h-full`}>
-      <body className="min-h-full flex flex-col bg-[#1a1a2e] text-white antialiased">
+      <body className="min-h-full flex flex-col bg-[#0c0c14] text-zinc-100 antialiased">
         {children}
       </body>
     </html>
