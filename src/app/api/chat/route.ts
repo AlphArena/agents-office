@@ -70,7 +70,7 @@ interface Delegation {
 function parseAtlasDelegations(response: string): Delegation[] {
   const results: Delegation[] = [];
 
-  // Try JSON array: [{"delegate": "Mia", "task": "..."}, ...]
+  // Try JSON array
   try {
     const arrayMatch = response.match(/\[[\s\S]*\]/);
     if (arrayMatch) {
@@ -84,7 +84,7 @@ function parseAtlasDelegations(response: string): Delegation[] {
     }
   } catch {}
 
-  // Try single JSON: {"delegate": "Mia", "task": "..."}
+  // Try single JSON
   try {
     const jsonMatch = response.match(/\{[\s\S]*?"delegate"[\s\S]*?"task"[\s\S]*?\}/);
     if (jsonMatch) {
@@ -111,58 +111,129 @@ function parseAtlasDelegations(response: string): Delegation[] {
   return [];
 }
 
+// ── Detect if Sage is asking questions vs providing improved prompt ──
+
+function parseSageResponse(sageText: string): {
+  type: "questions" | "ready";
+  questions?: string[];
+  improvedPrompt?: string;
+} {
+  // Check for IMPROVED PROMPT
+  const improvedMatch = sageText.match(/IMPROVED PROMPT:\s*([\s\S]*?)(?:ASSUMPTIONS:|$)/i);
+  if (improvedMatch) {
+    return { type: "ready", improvedPrompt: improvedMatch[1].trim() };
+  }
+
+  // Check for question patterns
+  if (/\?\s*$/m.test(sageText) || /\d+\.\s+\w/m.test(sageText)) {
+    return { type: "questions" };
+  }
+
+  // Default: treat as ready with the raw text as prompt
+  return { type: "ready", improvedPrompt: sageText };
+}
+
 // ── API Route ────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const { message, agentId, channelId, skipSage, skipAtlas } = await req.json();
+  const {
+    message,
+    agentId,
+    channelId,
+    step,           // "sage" | "atlas" | "full"
+    sageContext,     // previous Sage conversation for context
+  } = await req.json();
 
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
-  // ── Direct agent call (bypass Sage + Atlas) ──
+  // ── Direct agent call ──
   if (agentId) {
     const text = await callAgent(agentId, message, channelId);
     return NextResponse.json({ text: text || "No response", agentId });
   }
 
-  // ── Full pipeline: Sage → Atlas → Agents ──
-
-  // Step 1: Sage curates the prompt
-  let curatedMessage = message;
-  let sageResponse = null;
-
-  if (!skipSage) {
-    const sageCid = crypto.randomUUID();
-    const sageRaw = await callAgent(SAGE_ID, message, sageCid);
-    sageResponse = sageRaw;
-
-    // Extract improved prompt if Sage produced one
-    const improvedMatch = sageRaw.match(/IMPROVED PROMPT:\s*([\s\S]*?)(?:ASSUMPTIONS:|$)/i);
-    if (improvedMatch) {
-      curatedMessage = improvedMatch[1].trim();
-    } else {
-      curatedMessage = sageRaw || message;
+  // ── Step 1: SAGE (curate the prompt) ──
+  if (!step || step === "sage") {
+    // Build context from previous conversation with Sage
+    let sageMessage = message;
+    if (sageContext) {
+      sageMessage = `Original request: ${sageContext}\nAdditional details from user: ${message}\n\nBased on the above, write a detailed improved version. Start with "IMPROVED PROMPT:" followed by the detailed version. End with "ASSUMPTIONS:". Do not ask questions.`;
     }
-  }
 
-  // Step 2: Atlas routes the curated message
-  let atlasResponse = "";
-  let delegations: Delegation[] = [];
+    const sageCid = crypto.randomUUID();
+    const sageRaw = await callAgent(SAGE_ID, sageMessage, sageCid);
+    const parsed = parseSageResponse(sageRaw);
 
-  if (!skipAtlas) {
+    if (parsed.type === "questions") {
+      // Sage is asking questions — return them to the frontend
+      return NextResponse.json({
+        step: "sage_questions",
+        sageResponse: sageRaw,
+        originalMessage: sageContext || message,
+      });
+    }
+
+    // Sage produced an improved prompt — continue to Atlas
+    const curatedMessage = parsed.improvedPrompt || message;
+
+    // Fall through to Atlas
     const atlasCid = crypto.randomUUID();
-    atlasResponse = await callAgent(ATLAS_ID, curatedMessage, atlasCid);
-    delegations = parseAtlasDelegations(atlasResponse);
+    const atlasRaw = await callAgent(ATLAS_ID, curatedMessage, atlasCid);
+    const delegations = parseAtlasDelegations(atlasRaw);
+
+    if (delegations.length === 0) {
+      const fallbackAgent = routeByKeywords(curatedMessage);
+      delegations.push({ delegate: fallbackAgent, task: curatedMessage });
+    }
+
+    // Call each delegated agent
+    const agentResponses = await executeDelegations(delegations, message);
+
+    return NextResponse.json({
+      step: "complete",
+      curatedMessage,
+      sageResponse: sageRaw,
+      atlasResponse: atlasRaw,
+      delegations,
+      agentResponses,
+      text: formatResponses(agentResponses),
+    });
   }
 
-  // If Atlas couldn't delegate, use keyword routing
-  if (delegations.length === 0) {
-    const fallbackAgent = routeByKeywords(curatedMessage);
-    delegations = [{ delegate: fallbackAgent, task: curatedMessage }];
+  // ── Step 2: ATLAS only (skip Sage, go direct) ──
+  if (step === "atlas") {
+    const atlasCid = crypto.randomUUID();
+    const atlasRaw = await callAgent(ATLAS_ID, message, atlasCid);
+    const delegations = parseAtlasDelegations(atlasRaw);
+
+    if (delegations.length === 0) {
+      const fallbackAgent = routeByKeywords(message);
+      delegations.push({ delegate: fallbackAgent, task: message });
+    }
+
+    const agentResponses = await executeDelegations(delegations, message);
+
+    return NextResponse.json({
+      step: "complete",
+      atlasResponse: atlasRaw,
+      delegations,
+      agentResponses,
+      text: formatResponses(agentResponses),
+    });
   }
 
-  // Step 3: Call each delegated agent
+  // ── Default: full pipeline ──
+  return NextResponse.json({ error: "Invalid step" }, { status: 400 });
+}
+
+// ── Execute delegations ──────────────────────────────────────────────
+
+async function executeDelegations(
+  delegations: Delegation[],
+  originalMessage: string,
+) {
   const agentResponses: Array<{
     agent: string;
     agentId: string;
@@ -188,7 +259,7 @@ export async function POST(req: NextRequest) {
 
     try {
       const agentCid = crypto.randomUUID();
-      const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task}`;
+      const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || originalMessage}`;
       const response = await callAgent(targetId, taskMsg, agentCid);
       agentResponses.push({
         agent: delegation.delegate,
@@ -208,26 +279,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({
-    // Pipeline metadata
-    curatedBy: skipSage ? null : "Sage",
-    curatedMessage: curatedMessage !== message ? curatedMessage : null,
-    sageResponse,
+  return agentResponses;
+}
 
-    // Atlas routing
-    atlasResponse,
-    delegations,
+// ── Format responses for display ─────────────────────────────────────
 
-    // Agent responses
-    agentResponses,
-
-    // Combined text for simple display
-    text: agentResponses
-      .map((r) => {
-        const header = `**${r.agent}:**`;
-        const body = r.error ? `Error: ${r.error}` : r.response;
-        return `${header}\n${body}`;
-      })
-      .join("\n\n---\n\n"),
-  });
+function formatResponses(
+  agentResponses: Array<{ agent: string; response: string; error?: string }>,
+): string {
+  return agentResponses
+    .map((r) => {
+      const header = `**${r.agent}:**`;
+      const body = r.error ? `Error: ${r.error}` : r.response;
+      return `${header}\n${body}`;
+    })
+    .join("\n\n---\n\n");
 }
