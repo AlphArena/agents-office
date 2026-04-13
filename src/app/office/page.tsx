@@ -163,6 +163,8 @@ export default function Home() {
     }, duration);
   }
 
+  const [sageContext, setSageContext] = useState<string | null>(null);
+
   async function handleChat() {
     const msg = chatInput.trim();
     if (!msg) return;
@@ -172,52 +174,62 @@ export default function Home() {
     setThinking("Sage");
 
     try {
+      // Build request — if sageContext exists, we're answering Sage's questions
+      const body: Record<string, string | null> = { message: msg, channelId };
+      if (sageContext) {
+        body.sageContext = sageContext;
+      }
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg, channelId }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();
       setThinking(null);
 
-      // Show Sage's curated version if different
+      // ── Step: Sage is asking questions ──
+      if (data.step === "sage_questions") {
+        setSageContext(data.originalMessage || msg);
+        setChat((p) => [...p, { role: "agent", text: data.sageResponse, agentName: "Sage" }]);
+        return;
+      }
+
+      // ── Step: Complete pipeline ──
+      setSageContext(null); // reset Sage context
+
+      // Show Sage's curated version
       if (data.curatedMessage) {
         setChat((p) => [...p, { role: "agent", text: data.curatedMessage, agentName: "Sage" }]);
       }
 
-      // Show Atlas response
-      setChat((p) => [...p, { role: "nova", text: data.text }]);
+      // Show Atlas delegation info
+      if (data.delegations && data.delegations.length > 0) {
+        const names = data.delegations.map((d: { delegate: string }) => d.delegate).join(" + ");
+        setOrchestratorBubble(`→ ${names}`);
+        setTimeout(() => setOrchestratorBubble(""), 3000);
 
-      // If Atlas delegated to someone, send the message to that agent too
-      if (data.delegatedTo) {
-        const agentId = data.delegatedTo;
-        const agent = agentDefs.find((a) => a.id === agentId);
-        if (agent) {
-          setOrchestratorBubble(`${agent.name}, on it`);
-          setTimeout(() => setOrchestratorBubble(""), 2500);
-          assignTask(agentId, msg.slice(0, 30));
-
-          if (data.delegatedResponse) {
-            // Response already came back from DELEGATE_TASK
-            setChat((p) => [...p, { role: "agent", text: data.delegatedResponse, agentName: agent.name }]);
-          } else if (data.delegatedAgentId) {
-            // Need to ask the agent directly
-            setThinking(agent.name);
-            const agentRes = await fetch("/api/chat", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ message: msg, agentId: data.delegatedAgentId, channelId }),
-            });
-            const agentData = await agentRes.json();
-            setThinking(null);
-            setChat((p) => [...p, { role: "agent", text: agentData.text, agentName: agent.name }]);
-          }
-        }
+        setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
       }
+
+      // Show each agent's response
+      if (data.agentResponses) {
+        for (const agentRes of data.agentResponses) {
+          const agent = agentDefs.find((a) => a.name.toLowerCase() === agentRes.agent.toLowerCase());
+          if (agent) {
+            assignTask(agent.id, agentRes.task?.slice(0, 30) || "working");
+          }
+          const text = agentRes.error ? `Error: ${agentRes.error}` : agentRes.response;
+          setChat((p) => [...p, { role: "agent", text, agentName: agentRes.agent }]);
+        }
+      } else if (data.text) {
+        setChat((p) => [...p, { role: "nova", text: data.text }]);
+      }
+
     } catch {
       setThinking(null);
-      setChat((p) => [...p, { role: "nova", text: "Error: could not reach Atlas" }]);
+      setChat((p) => [...p, { role: "nova", text: "Error: could not reach the agents" }]);
     }
   }
 
