@@ -176,14 +176,56 @@ export default function Home() {
     return data.text || "";
   }
 
+  // Instantly assign agents based on keywords (no LLM needed)
+  function quickAssign(msg: string) {
+    const lower = msg.toLowerCase();
+    const assignments: { id: string; task: string }[] = [];
+
+    if (/landing|page|frontend|ui|component|css|react/i.test(lower))
+      assignments.push({ id: "mia", task: "building frontend" });
+    if (/api|backend|server|database|endpoint/i.test(lower))
+      assignments.push({ id: "sam", task: "building API" });
+    if (/deploy|server|infra|docker|k8s/i.test(lower))
+      assignments.push({ id: "rex", task: "preparing deploy" });
+    if (/design|ux|wireframe|figma/i.test(lower))
+      assignments.push({ id: "luna", task: "designing UI" });
+    if (/audit|security|review/i.test(lower))
+      assignments.push({ id: "victor", task: "auditing code" });
+    if (/solidity|contract|web3|solana|token/i.test(lower))
+      assignments.push({ id: "zara", task: "writing contract" });
+    if (/roadmap|plan|story|sprint|product/i.test(lower))
+      assignments.push({ id: "alex", task: "planning project" });
+
+    // Always assign at least one
+    if (assignments.length === 0)
+      assignments.push({ id: "sam", task: "handling task" });
+
+    return assignments;
+  }
+
   async function handleChat() {
     const msg = chatInput.trim();
     if (!msg) return;
     setChatInput("");
     setChat((p) => [...p, { role: "user", text: msg }]);
 
+    // Instantly move agents to desks (no waiting for LLM)
+    const quickAgents = quickAssign(msg);
+    const names = quickAgents.map(a => {
+      const def = agentDefs.find(d => d.id === a.id);
+      return def?.name || a.id;
+    }).join(" + ");
+
+    setOrchestratorBubble(`→ ${names}`);
+    setTimeout(() => setOrchestratorBubble(""), 3000);
+    setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
+
+    for (const a of quickAgents) {
+      assignTask(a.id, a.task);
+    }
+
+    // Now call Atlas in background for the real response
     try {
-      // ── Send directly to Atlas (skip Sage) ──
       setThinking("Atlas");
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
