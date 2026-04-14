@@ -331,7 +331,7 @@ RULES:
                       if (Array.isArray(repos)) {
                         for (const repo of repos) {
                           const createdAt = new Date(repo.created_at).getTime();
-                          if (Date.now() - createdAt < 300000) {
+                          if (Date.now() - createdAt < 600000) {
                             send("action", {
                               type: "repo_created",
                               agent: displayName,
@@ -351,15 +351,16 @@ RULES:
                 if (!repoFound && mentionsRepo) {
                   const repoNameMatch = response.match(/(?:solanacloud-\w+\/[\w-]+)/i)
                     || response.match(/(?:repo|repository)\s+(?:named?\s+)?["']?([\w-]+)/i);
-                  const repoName = repoNameMatch
-                    ? (repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`)
-                    : `${githubAgent.user}/latest`;
-                  send("action", {
-                    type: "repo_created",
-                    agent: displayName,
-                    repo: repoName,
-                    url: `https://github.com/${repoName}`,
-                  });
+                  if (repoNameMatch) {
+                    const repoName = repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`;
+                    send("action", {
+                      type: "repo_created",
+                      agent: displayName,
+                      repo: repoName,
+                      url: `https://github.com/${repoName}`,
+                    });
+                  }
+                  // No fallback — don't show a fake repo link
                 }
               }
             }
