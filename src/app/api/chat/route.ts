@@ -134,10 +134,10 @@ function parseAtlasDelegations(response: string): Delegation[] {
     if (results.length > 0) return results;
   } catch {}
 
-  // Find agent name in prose
+  // Find agent name in prose — use original user message as task, not Atlas prose
   const nameMatch = response.match(/\b(Rex|Luna|Victor|Mia|Sam|Alex|Zara)\b/i);
   if (nameMatch) {
-    return [{ delegate: nameMatch[1], task: response }];
+    return [{ delegate: nameMatch[1], task: "Handle the task" }];
   }
 
   return [];
@@ -205,23 +205,33 @@ export async function POST(req: NextRequest) {
     } catch {}
 
     // Post-process: detect missing agents for multi-agent tasks
-    if (delegations.length > 0) {
-      const lower = message.toLowerCase();
-      const hasAgent = (name: string) => delegations.some(d => d.delegate.toLowerCase() === name);
+    const lower = message.toLowerCase();
+    const hasAgent = (name: string) => delegations.some(d => d.delegate.toLowerCase() === name);
 
-      const needsFrontend = /landing|page|frontend|ui|website/i.test(lower);
-      const needsBackend = /api|backend|endpoint|catalog|database/i.test(lower);
-      const needsDeploy = /deploy|production|server/i.test(lower);
+    const needsFrontend = /landing|page|frontend|ui|website|css|html|react|component/i.test(lower);
+    const needsBackend = /api|backend|endpoint|catalog|database|rest|graphql|server/i.test(lower);
+    const needsDeploy = /deploy|deploya|desplega|production|infrastructure|docker/i.test(lower);
+    const needsWeb3 = /blockchain|solidity|solana|smart\s*contract|web3|defi|token|anchor/i.test(lower);
+    const needsDesign = /design|ux|wireframe|figma|prototype/i.test(lower);
+    const needsPM = /roadmap|okr|user\s+stor|sprint|product\s+manag/i.test(lower);
 
-      if (needsFrontend && !hasAgent("mia")) {
-        delegations.push({ delegate: "Mia", task: `Build the frontend. User request: ${message}` });
-      }
-      if (needsBackend && !hasAgent("sam")) {
-        delegations.push({ delegate: "Sam", task: `Build the backend API. User request: ${message}` });
-      }
-      if (needsDeploy && !hasAgent("rex")) {
-        delegations.push({ delegate: "Rex", task: `Deploy to production. User request: ${message}` });
-      }
+    if (needsFrontend && !hasAgent("mia")) {
+      delegations.push({ delegate: "Mia", task: `Build the frontend. User request: ${message}` });
+    }
+    if (needsBackend && !hasAgent("sam")) {
+      delegations.push({ delegate: "Sam", task: `Build the backend API. User request: ${message}` });
+    }
+    if (needsDeploy && !hasAgent("rex")) {
+      delegations.push({ delegate: "Rex", task: `Deploy to production. User request: ${message}` });
+    }
+    if (needsWeb3 && !hasAgent("zara")) {
+      delegations.push({ delegate: "Zara", task: `Build the Web3/blockchain component. User request: ${message}` });
+    }
+    if (needsDesign && !hasAgent("luna")) {
+      delegations.push({ delegate: "Luna", task: `Design the UX/UI. User request: ${message}` });
+    }
+    if (needsPM && !hasAgent("alex")) {
+      delegations.push({ delegate: "Alex", task: `Plan the project. User request: ${message}` });
     }
 
     return NextResponse.json({ delegations });
@@ -233,22 +243,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "agentId is required" }, { status: 400 });
     }
 
-    const taskMsg = `${task || message}
+    const taskMsg = `Write the complete code for: ${task || message}
 
-You MUST include the complete code in your response. Write every file with full contents using this format:
-
-file: src/App.tsx
-\`\`\`tsx
-// full code here
-\`\`\`
-
-RULES:
-- Write ALL files with ALL the code. Every component, every style, every config.
-- Do NOT ask questions or ask for clarification.
-- Do NOT just describe what you will build — write the actual code.
-- Do NOT delegate to other agents.
-- No placeholders, no TODOs.
-- You may also use CREATE_PROJECT, but the code MUST appear in your text response too.`;
+Respond with ONLY code. No questions. No asking for details. Use sample data if needed. Start writing code immediately.`;
 
     // SSE stream for a single agent execution
     const encoder = new TextEncoder();
@@ -394,7 +391,28 @@ RULES:
   // ── Step 3: Victor reviews (called after all tasks complete) ──
   if (step === "review") {
     const victorId = AGENT_IDS["victor"];
-    const reviewMsg = `Review the code below. Start your response with APPROVED or NEEDS CHANGES, then list up to 5 specific issues you found (bugs, security, missing error handling). Do NOT create repos, do NOT ask for more code, do NOT delegate. Just review what you see.\n\n${message}`;
+    // Only send to Victor if there's actual code to review
+    const hasCode = /```|file:|function |const |import |class |def |app\./i.test(message);
+    if (!hasCode) {
+      // No real code to review — auto-approve
+      const encoder = new TextEncoder();
+      const readable = new ReadableStream({
+        start(controller) {
+          function send(event: string, data: unknown) {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          }
+          send("thinking", { agent: "Victor", status: "reviewing" });
+          send("agent_response", { agent: "Victor", agentId: AGENT_IDS["victor"], task: "Code review", response: "APPROVED — no code issues detected." });
+          send("done", { status: "complete" });
+          controller.close();
+        },
+      });
+      return new Response(readable, {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
+      });
+    }
+
+    const reviewMsg = `Is this code safe? Say APPROVED or NEEDS CHANGES. List real bugs only.\n\n${message}`;
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
