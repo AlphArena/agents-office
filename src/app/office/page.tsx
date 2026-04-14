@@ -302,7 +302,6 @@ export default function Home() {
                 case "thinking":
                   if (data.status === "routing") {
                     setThinking("Atlas is routing...");
-                    setChat((p) => [...p, { role: "nova", text: "🧠 Atlas is analyzing your request..." }]);
                   } else if (data.status === "working") {
                     setThinking(`${data.agent} is working...`);
                     setChat((p) => [...p, { role: "nova", text: `⚡ ${data.agent} started working: ${data.task || ""}` }]);

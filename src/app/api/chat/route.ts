@@ -61,16 +61,35 @@ async function callAgent(agentId: string, message: string, channelId?: string): 
 
 // ── Keyword routing fallback ─────────────────────────────────────────
 
-function routeByKeywords(text: string): string {
+// ── Smart keyword routing (instant, no LLM needed) ───────────────────
+
+function routeByKeywords(text: string): Delegation[] {
   const lower = text.toLowerCase();
-  if (/solidity|solana|blockchain|defi|smart\s*contract|token|web3|dao/i.test(lower)) return "zara";
-  if (/audit|security\s+review|vulnerability|exploit|reentrancy/i.test(lower)) return "victor";
-  if (/css|html|react|redux|tailwind|vue|angular|next\.?js|frontend|landing/i.test(lower)) return "mia";
-  if (/deploy|ci.?cd|kubernetes|docker|terraform|devops|infrastructure/i.test(lower)) return "rex";
-  if (/design|ux|wireframe|figma|prototype|user\s+flow|accessibility/i.test(lower)) return "luna";
-  if (/roadmap|okr|user\s+stor|sprint|stakeholder|product|agile/i.test(lower)) return "alex";
-  if (/node|python|java|api|database|backend|express|server/i.test(lower)) return "sam";
-  return "sam";
+  const delegations: Delegation[] = [];
+
+  // Multi-agent detection
+  const hasFrontend = /landing|page|frontend|ui|component|css|react|tailwind|html|website/i.test(lower);
+  const hasBackend = /api|backend|server|database|endpoint|rest|graphql|node|express/i.test(lower);
+  const hasDevOps = /deploy|ci.?cd|kubernetes|docker|terraform|devops|infrastructure|server/i.test(lower);
+  const hasDesign = /design|ux|wireframe|figma|prototype|user\s+flow|accessibility/i.test(lower);
+  const hasWeb3 = /solidity|solana|blockchain|defi|smart\s*contract|token|web3|dao|rust.*solana/i.test(lower);
+  const hasAudit = /audit|security\s+review|vulnerability|exploit|reentrancy/i.test(lower);
+  const hasPM = /roadmap|okr|user\s+stor|sprint|stakeholder|product\s+manag|agile/i.test(lower);
+
+  if (hasFrontend) delegations.push({ delegate: "Mia", task: `Build the frontend: ${text}` });
+  if (hasBackend) delegations.push({ delegate: "Sam", task: `Build the backend/API: ${text}` });
+  if (hasDevOps && !hasBackend) delegations.push({ delegate: "Rex", task: `Handle infrastructure: ${text}` });
+  if (hasDesign) delegations.push({ delegate: "Luna", task: `Design the UX/UI: ${text}` });
+  if (hasWeb3 && !hasAudit) delegations.push({ delegate: "Zara", task: `Build the Web3 component: ${text}` });
+  if (hasAudit) delegations.push({ delegate: "Victor", task: `Audit the code: ${text}` });
+  if (hasPM) delegations.push({ delegate: "Alex", task: `Plan the project: ${text}` });
+
+  // Default to Sam if nothing matched
+  if (delegations.length === 0) {
+    delegations.push({ delegate: "Sam", task: text });
+  }
+
+  return delegations;
 }
 
 // ── Parse Atlas delegation (single or array) ─────────────────────────
@@ -196,17 +215,8 @@ export async function POST(req: NextRequest) {
           }
 
           try {
-            // 1. Atlas routing
-            send("thinking", { agent: "Atlas", status: "routing" });
-            const atlasCid = crypto.randomUUID();
-            const atlasRaw = await callAgent(ATLAS_ID, message, atlasCid);
-            const delegations = parseAtlasDelegations(atlasRaw);
-
-            if (delegations.length === 0) {
-              const fallbackAgent = routeByKeywords(message);
-              delegations.push({ delegate: fallbackAgent, task: message });
-            }
-
+            // 1. Instant keyword routing (no LLM call — zero latency)
+            const delegations = routeByKeywords(message);
             send("delegations", { delegations });
 
             // 2. Call each agent SEQUENTIALLY with delay + retry
@@ -310,21 +320,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Non-streaming fallback
-    const atlasCid = crypto.randomUUID();
-    const atlasRaw = await callAgent(ATLAS_ID, message, atlasCid);
-    const delegations = parseAtlasDelegations(atlasRaw);
-
-    if (delegations.length === 0) {
-      const fallbackAgent = routeByKeywords(message);
-      delegations.push({ delegate: fallbackAgent, task: message });
-    }
-
+    // Non-streaming fallback — instant keyword routing
+    const delegations = routeByKeywords(message);
     const agentResponses = await executeDelegations(delegations, message, walletAddress);
 
     return NextResponse.json({
       step: "complete",
-      atlasResponse: atlasRaw,
       delegations,
       agentResponses,
       text: formatResponses(agentResponses),
