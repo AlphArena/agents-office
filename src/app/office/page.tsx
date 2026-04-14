@@ -122,6 +122,29 @@ export default function Home() {
   const [channelId, setChannelId] = useState(() => crypto.randomUUID());
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // ── Task Board ──
+  interface TaskItem { id: number; agent: string; task: string; status: "pending" | "working" | "done" | "error" }
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  let taskIdCounter = useRef(0);
+
+  function addTasks(delegations: { delegate: string; task?: string }[]) {
+    const newTasks: TaskItem[] = delegations.map(d => ({
+      id: taskIdCounter.current++,
+      agent: d.delegate,
+      task: d.task || "working",
+      status: "pending" as const,
+    }));
+    setTasks(p => [...p, ...newTasks]);
+  }
+
+  function updateTaskStatus(agent: string, status: "working" | "done" | "error") {
+    setTasks(p => p.map(t =>
+      t.agent.toLowerCase() === agent.toLowerCase() && t.status !== "done"
+        ? { ...t, status }
+        : t
+    ));
+  }
+
   // Fetch balance when wallet connects
   useEffect(() => {
     if (!publicKey) {
@@ -281,6 +304,7 @@ export default function Home() {
                     setThinking("Atlas is routing...");
                   } else if (data.status === "working") {
                     setThinking(`${data.agent} is working...`);
+                    updateTaskStatus(data.agent, "working");
                     // Move agent to desk
                     const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
                     if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
@@ -292,15 +316,18 @@ export default function Home() {
                   setOrchestratorBubble(`→ ${names}`);
                   setTimeout(() => setOrchestratorBubble(""), 3000);
                   setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
+                  addTasks(data.delegations);
                   break;
                 }
 
                 case "agent_response":
                   setChat((p) => [...p, { role: "agent", text: data.response, agentName: data.agent }]);
+                  updateTaskStatus(data.agent, "done");
                   break;
 
                 case "agent_error":
                   setChat((p) => [...p, { role: "agent", text: `Error: ${data.error}`, agentName: data.agent }]);
+                  updateTaskStatus(data.agent, "error");
                   break;
 
                 case "done":
@@ -639,6 +666,61 @@ export default function Home() {
               </div>
             </div>
           </div>
+
+          {/* Task Board */}
+          {tasks.length > 0 && (
+            <div className="max-h-[180px] flex flex-col border-b border-[#2a2a3a]">
+              <div className="px-3 py-1.5 border-b border-[#2a2a3a] flex items-center justify-between">
+                <span className="text-[10px] text-indigo-400 font-bold">TASK BOARD</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="text-[9px] text-emerald-400">{tasks.filter(t => t.status === "done").length}/{tasks.length} done</span>
+                  {tasks.every(t => t.status === "done" || t.status === "error") && (
+                    <button onClick={() => setTasks([])} className="text-[8px] text-[#3a3a4a] hover:text-[#5a5a6a]">clear</button>
+                  )}
+                </span>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <AnimatePresence initial={false}>
+                  {tasks.map((task) => (
+                    <motion.div
+                      key={task.id}
+                      className="px-3 py-1.5 border-b border-[#1a1a2a] flex items-center gap-2"
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                    >
+                      {/* Status icon */}
+                      {task.status === "done" ? (
+                        <span className="text-emerald-400 text-[10px]">✓</span>
+                      ) : task.status === "error" ? (
+                        <span className="text-red-400 text-[10px]">✗</span>
+                      ) : task.status === "working" ? (
+                        <span className="w-2 h-2 border border-[#fbbf24] border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <span className="w-2 h-2 border border-[#3a3a4a] rounded-full" />
+                      )}
+                      {/* Agent name */}
+                      <span className={`text-[10px] font-bold min-w-[40px] ${
+                        task.status === "done" ? "text-emerald-400" :
+                        task.status === "error" ? "text-red-400" :
+                        task.status === "working" ? "text-[#fbbf24]" :
+                        "text-[#5a5a6a]"
+                      }`}>
+                        {task.agent}
+                      </span>
+                      {/* Task description */}
+                      <span className={`text-[9px] flex-1 truncate ${
+                        task.status === "done" ? "text-[#4a4a5a] line-through" :
+                        task.status === "error" ? "text-red-400/60" :
+                        "text-[#6a6a7a]"
+                      }`}>
+                        {task.task.slice(0, 50)}
+                      </span>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            </div>
+          )}
 
           {/* x402 Payments */}
           <div className="h-[200px] flex flex-col">
