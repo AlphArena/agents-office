@@ -87,6 +87,18 @@ const API_BASE = "http://72.62.176.85:3003";
 const REX_ID = "fbcb8622-9d6e-04c8-b68b-f1bc7afd05a4";
 const USER_ID = "11111111-1111-1111-1111-111111111111";
 
+const AGENT_IDS: Record<string, string> = {
+  atlas: "8bd28d90-f59e-0ecb-828f-fecb287d3a0a",
+  sage: "c3bd776c-4465-037f-9c7a-bf94dfba78d9",
+  rex: "fbcb8622-9d6e-04c8-b68b-f1bc7afd05a4",
+  luna: "baaf10f1-b483-0977-a616-3141ffd45a62",
+  mia: "3aa06745-f0af-0361-b73e-af8315d72561",
+  sam: "265dc298-e876-0361-b7e4-07e746c90f39",
+  victor: "b6877f3b-c660-0b25-afb9-10b73ade3a30",
+  zara: "3e08adeb-e59f-0076-bf8e-6510fd82289f",
+  alex: "64542dba-bb81-0fd4-86e0-cf4f319567c7",
+};
+
 const statusColors = { idle: "#6366f1", working: "#eab308", done: "#22c55e" };
 
 function Clock() {
@@ -245,15 +257,112 @@ export default function Home() {
 
   const [sageContext, setSageContext] = useState<string | null>(null);
 
-  // Call a single agent directly via the API
-  async function callSingleAgent(agentId: string, message: string): Promise<string> {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, agentId, channelId }),
-    });
-    const data = await res.json();
-    return data.text || "";
+  // ── Process SSE stream from a single agent execution ──
+  async function processAgentStream(response: Response): Promise<{ success: boolean; repos: string[]; agentResponse: string }> {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    const repos: string[] = [];
+    let success = false;
+    let agentResponse = "";
+
+    if (!reader) return { success: false, repos: [], agentResponse: "" };
+
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      let eventName = "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventName = line.slice(7).trim();
+        } else if (line.startsWith("data: ") && eventName) {
+          try {
+            const data = JSON.parse(line.slice(6));
+
+            switch (eventName) {
+              case "thinking":
+                if (data.status === "working") {
+                  setThinking(`${data.agent} is working...`);
+                  setChat((p) => [...p, { role: "nova", text: `⚡ ${data.agent} started working: ${data.task || ""}` }]);
+                  updateTaskStatus(data.agent, "working");
+                  const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                  if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
+                } else if (data.status === "retrying") {
+                  setThinking(`${data.agent} — retrying...`);
+                  setChat((p) => [...p, { role: "nova", text: `🔄 ${data.agent} — retrying...` }]);
+                } else if (data.status === "reviewing") {
+                  setThinking("Victor is reviewing...");
+                  setChat((p) => [...p, { role: "nova", text: `🔍 Victor is reviewing the work...` }]);
+                }
+                break;
+
+              case "progress":
+                setThinking(`${data.agent}: ${data.message}`);
+                setChat((p) => {
+                  const last = p[p.length - 1];
+                  if (last?.role === "nova" && last.text.startsWith("⏳")) {
+                    return [...p.slice(0, -1), { role: "nova" as const, text: `⏳ ${data.agent}: ${data.message}` }];
+                  }
+                  return [...p, { role: "nova" as const, text: `⏳ ${data.agent}: ${data.message}` }];
+                });
+                break;
+
+              case "agent_response": {
+                setChat((p) => [...p, { role: "agent", text: data.response, agentName: data.agent }]);
+                updateTaskStatus(data.agent, "done");
+                const doneAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                if (doneAgent) finishTask(doneAgent.id);
+                success = true;
+                agentResponse = data.response;
+
+                if (data.agent.toLowerCase() === "rex" && data.response) {
+                  const portMatch = data.response.match(/(?:port|:)\s*(\d{4,5})/i);
+                  if (portMatch) {
+                    setChat((p) => [...p, { role: "nova", text: `🚀 Live at: http://72.62.176.85:${portMatch[1]}` }]);
+                  }
+                }
+                break;
+              }
+
+              case "agent_error": {
+                setChat((p) => [...p, { role: "agent", text: `Error: ${data.error}`, agentName: data.agent }]);
+                updateTaskStatus(data.agent, "error");
+                const errAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                if (errAgent) finishTask(errAgent.id);
+                break;
+              }
+
+              case "action":
+                if (data.type === "repo_created") {
+                  repos.push(data.repo);
+                  setSessionRepos((p) => [...p, data.repo]);
+                  setChat((p) => [...p, {
+                    role: "agent",
+                    text: `📦 Created repo **${data.repo}** → ${data.url}`,
+                    agentName: data.agent,
+                  }]);
+                }
+                break;
+
+              case "done":
+                break;
+
+              case "error":
+                setChat((p) => [...p, { role: "nova", text: `Error: ${data.error}` }]);
+                break;
+            }
+          } catch {}
+          eventName = "";
+        }
+      }
+    }
+
+    return { success, repos, agentResponse };
   }
 
   async function handleChat() {
@@ -277,144 +386,108 @@ export default function Home() {
       }
       setSessionHistory((p) => [...p, msg]);
 
-      // Call Atlas with SSE streaming
-      setThinking("Atlas is routing...");
+      // ── Step 1: Atlas plans — returns task list only ──
+      setThinking("Atlas is planning...");
+      setChat((p) => [...p, { role: "nova", text: "Planning tasks..." }]);
+
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: fullMessage, step: "atlas" }),
       });
 
-      // Process SSE stream
-      const reader = atlasRes.body?.getReader();
-      const decoder = new TextDecoder();
+      const atlasData = await atlasRes.json();
+      const delegations: { delegate: string; task: string }[] = atlasData.delegations || [];
 
-      if (!reader) {
+      if (delegations.length === 0) {
         setThinking(null);
-        setChat((p) => [...p, { role: "nova", text: "Error: no response stream" }]);
+        setChat((p) => [...p, { role: "nova", text: "No tasks to delegate." }]);
         return;
       }
 
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      // Show task board
+      const names = delegations.map(d => d.delegate).join(" + ");
+      setOrchestratorBubble(`→ ${names}`);
+      setTimeout(() => setOrchestratorBubble(""), 3000);
+      setChat((p) => [...p, { role: "nova", text: `Task list: ${delegations.map(d => `${d.delegate} → ${d.task}`).join(" | ")}` }]);
+      addTasks(delegations);
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        let eventName = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventName = line.slice(7).trim();
-          } else if (line.startsWith("data: ") && eventName) {
-            try {
-              const data = JSON.parse(line.slice(6));
-
-              switch (eventName) {
-                case "thinking":
-                  if (data.status === "routing") {
-                    setThinking("Atlas is routing...");
-                  } else if (data.status === "working") {
-                    setThinking(`${data.agent} is working...`);
-                    setChat((p) => [...p, { role: "nova", text: `⚡ ${data.agent} started working: ${data.task || ""}` }]);
-                    updateTaskStatus(data.agent, "working");
-                    const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
-                    if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
-                  } else if (data.status === "waiting") {
-                    setThinking(`Waiting before calling ${data.agent}...`);
-                    setChat((p) => [...p, { role: "nova", text: `⏳ Waiting before calling ${data.agent}...` }]);
-                  } else if (data.status === "retrying") {
-                    setThinking(`${data.agent} — retrying...`);
-                    setChat((p) => [...p, { role: "nova", text: `🔄 ${data.agent} — retrying...` }]);
-                  }
-                  break;
-
-                case "delegations": {
-                  const names = data.delegations.map((d: { delegate: string }) => d.delegate).join(" + ");
-                  setOrchestratorBubble(`→ ${names}`);
-                  setTimeout(() => setOrchestratorBubble(""), 3000);
-                  setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
-                  addTasks(data.delegations);
-                  break;
-                }
-
-                case "progress":
-                  setThinking(`${data.agent}: ${data.message}`);
-                  setChat((p) => {
-                    // Update the last progress message instead of adding new ones
-                    const last = p[p.length - 1];
-                    if (last?.role === "nova" && last.text.startsWith("⏳")) {
-                      return [...p.slice(0, -1), { role: "nova" as const, text: `⏳ ${data.agent}: ${data.message}` }];
-                    }
-                    return [...p, { role: "nova" as const, text: `⏳ ${data.agent}: ${data.message}` }];
-                  });
-                  break;
-
-                case "agent_response": {
-                  setChat((p) => [...p, { role: "agent", text: data.response, agentName: data.agent }]);
-                  updateTaskStatus(data.agent, "done");
-                  const doneAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
-                  if (doneAgent) finishTask(doneAgent.id);
-
-                  // If Rex deployed something, try to detect the URL
-                  if (data.agent.toLowerCase() === "rex" && data.response) {
-                    const portMatch = data.response.match(/(?:port|:)\s*(\d{4,5})/i);
-                    if (portMatch) {
-                      setChat((p) => [...p, {
-                        role: "nova",
-                        text: `🚀 Live at: http://72.62.176.85:${portMatch[1]}`,
-                      }]);
-                    }
-                  }
-                  break;
-                }
-
-                case "agent_error": {
-                  setChat((p) => [...p, { role: "agent", text: `Error: ${data.error}`, agentName: data.agent }]);
-                  updateTaskStatus(data.agent, "error");
-                  const errAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
-                  if (errAgent) finishTask(errAgent.id);
-                  break;
-                }
-
-                case "action":
-                  if (data.type === "repo_created") {
-                    setSessionRepos((p) => [...p, data.repo]);
-                    setChat((p) => [...p, {
-                      role: "agent",
-                      text: `📦 Created repo **${data.repo}** → ${data.url}`,
-                      agentName: data.agent,
-                    }]);
-                  }
-                  break;
-
-                case "done":
-                  setThinking(null);
-                  if (data.hint) {
-                    setChat((p) => [...p, { role: "nova", text: `💡 ${data.hint}` }]);
-                  }
-                  break;
-
-                case "error":
-                  setThinking(null);
-                  setChat((p) => [...p, { role: "nova", text: `Error: ${data.error}` }]);
-                  break;
-              }
-            } catch {}
-            eventName = "";
-          }
-        }
-      }
       setThinking(null);
+
+      // ── Step 2: Execute each agent task sequentially ──
+      const allRepos: string[] = [];
+      const agentOutputs: { agent: string; task: string; response: string }[] = [];
+
+      for (let i = 0; i < delegations.length; i++) {
+        const delegation = delegations[i];
+        const agentName = delegation.delegate.toLowerCase();
+        const targetId = AGENT_IDS[agentName as keyof typeof AGENT_IDS];
+
+        if (!targetId) {
+          setChat((p) => [...p, { role: "nova", text: `Agent "${delegation.delegate}" not found` }]);
+          updateTaskStatus(delegation.delegate, "error");
+          continue;
+        }
+
+        // Wait between agents to avoid x402 rate limit
+        if (i > 0) {
+          setChat((p) => [...p, { role: "nova", text: `⏳ Waiting before calling ${delegation.delegate}...` }]);
+          await new Promise(r => setTimeout(r, 8000));
+        }
+
+        // Execute this agent
+        const agentRes = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: fullMessage,
+            step: "execute",
+            agentId: targetId,
+            task: delegation.task,
+            channelId,
+            walletAddress: publicKey.toBase58(),
+          }),
+        });
+
+        const { success, repos, agentResponse } = await processAgentStream(agentRes);
+        if (success) {
+          agentOutputs.push({ agent: delegation.delegate, task: delegation.task, response: agentResponse });
+        }
+        allRepos.push(...repos);
+      }
+
+      // ── Step 3: Victor reviews with actual agent output ──
+      if (agentOutputs.length > 0) {
+        setChat((p) => [...p, { role: "nova", text: "All tasks complete. Sending to Victor for review..." }]);
+
+        // Wait for rate limit
+        await new Promise(r => setTimeout(r, 8000));
+
+        // Build review summary with actual code/responses (truncate to avoid token limits)
+        const reviewSummary = agentOutputs.map(o =>
+          `## ${o.agent} — ${o.task}\n${o.response.slice(0, 4000)}`
+        ).join("\n\n---\n\n");
+
+        const victorRes = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: reviewSummary,
+            step: "review",
+            walletAddress: publicKey.toBase58(),
+          }),
+        });
+
+        await processAgentStream(victorRes);
+      }
+
+      setThinking(null);
+      setChat((p) => [...p, { role: "nova", text: "💡 All done! Say 'deploy' to deploy to production" }]);
     } catch {
       setThinking(null);
       setChat((p) => [...p, { role: "nova", text: "Error: could not reach the agents" }]);
     }
   }
-
-  // showAtlasResults removed — streaming handles everything inline
 
   return (
     <main className="flex-1 flex flex-col font-[family-name:var(--font-mono)] bg-[#1a1a2e] min-h-screen">

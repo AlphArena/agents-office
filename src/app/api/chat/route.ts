@@ -70,19 +70,19 @@ function routeByKeywords(text: string): Delegation[] {
   // Multi-agent detection
   const hasFrontend = /landing|page|frontend|ui|component|css|react|tailwind|html|website/i.test(lower);
   const hasBackend = /api|backend|server|database|endpoint|rest|graphql|node|express/i.test(lower);
-  const hasDevOps = /deploy|ci.?cd|kubernetes|docker|terraform|devops|infrastructure|server/i.test(lower);
+  const hasDevOps = /deploy|ci.?cd|kubernetes|docker|terraform|devops|infrastructure/i.test(lower);
   const hasDesign = /design|ux|wireframe|figma|prototype|user\s+flow|accessibility/i.test(lower);
   const hasWeb3 = /solidity|solana|blockchain|defi|smart\s*contract|token|web3|dao|rust.*solana/i.test(lower);
   const hasAudit = /audit|security\s+review|vulnerability|exploit|reentrancy/i.test(lower);
   const hasPM = /roadmap|okr|user\s+stor|sprint|stakeholder|product\s+manag|agile/i.test(lower);
 
-  if (hasFrontend) delegations.push({ delegate: "Mia", task: `Build the frontend: ${text}` });
-  if (hasBackend) delegations.push({ delegate: "Sam", task: `Build the backend/API: ${text}` });
-  if (hasDevOps && !hasBackend) delegations.push({ delegate: "Rex", task: `Handle infrastructure: ${text}` });
-  if (hasDesign) delegations.push({ delegate: "Luna", task: `Design the UX/UI: ${text}` });
-  if (hasWeb3 && !hasAudit) delegations.push({ delegate: "Zara", task: `Build the Web3 component: ${text}` });
-  if (hasAudit) delegations.push({ delegate: "Victor", task: `Audit the code: ${text}` });
-  if (hasPM) delegations.push({ delegate: "Alex", task: `Plan the project: ${text}` });
+  if (hasFrontend) delegations.push({ delegate: "Mia", task: `Build a complete landing page with hero, features, and footer using React + Tailwind CSS. User request: ${text}` });
+  if (hasBackend) delegations.push({ delegate: "Sam", task: `Build the REST API with all endpoints, models, and routes. User request: ${text}` });
+  if (hasDevOps) delegations.push({ delegate: "Rex", task: `Deploy the project to production with Docker. User request: ${text}` });
+  if (hasDesign) delegations.push({ delegate: "Luna", task: `Design the UX/UI wireframes and component specs. User request: ${text}` });
+  if (hasWeb3 && !hasAudit) delegations.push({ delegate: "Zara", task: `Build the smart contract / Web3 integration. User request: ${text}` });
+  if (hasAudit) delegations.push({ delegate: "Victor", task: `Audit the code for security vulnerabilities. User request: ${text}` });
+  if (hasPM) delegations.push({ delegate: "Alex", task: `Create the project roadmap and user stories. User request: ${text}` });
 
   // Default to Sam if nothing matched
   if (delegations.length === 0) {
@@ -176,7 +176,7 @@ async function chargeUser(walletAddress: string, agentName: string, task: string
 }
 
 export async function POST(req: NextRequest) {
-  const { message, agentId, channelId, step, walletAddress } = await req.json();
+  const { message, agentId, channelId, step, walletAddress, task } = await req.json();
 
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
@@ -195,296 +195,231 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Direct agent call ──
+  // ── Step 1: Atlas planning — returns task list only ──
+  if (step === "atlas") {
+    // Use keyword routing (instant, reliable) — Atlas LLM was too unreliable for JSON output
+    const delegations = routeByKeywords(message);
+    return NextResponse.json({ delegations });
+  }
+
+  // ── Step 2: Execute a single agent task ──
+  if (step === "execute") {
+    if (!agentId) {
+      return NextResponse.json({ error: "agentId is required" }, { status: 400 });
+    }
+
+    const taskMsg = `${task || message}
+
+You MUST include the complete code in your response. Write every file with full contents using this format:
+
+file: src/App.tsx
+\`\`\`tsx
+// full code here
+\`\`\`
+
+RULES:
+- Write ALL files with ALL the code. Every component, every style, every config.
+- Do NOT ask questions or ask for clarification.
+- Do NOT just describe what you will build — write the actual code.
+- Do NOT delegate to other agents.
+- No placeholders, no TODOs.
+- You may also use CREATE_PROJECT, but the code MUST appear in your text response too.`;
+
+    // SSE stream for a single agent execution
+    const encoder = new TextEncoder();
+    const readable = new ReadableStream({
+      async start(controller) {
+        function send(event: string, data: unknown) {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        }
+
+        try {
+          const agentName = Object.entries(AGENT_IDS).find(([, id]) => id === agentId)?.[0] || "agent";
+          const displayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+
+          send("thinking", { agent: displayName, status: "working", task });
+
+          let response = "";
+          const maxRetries = 2;
+          const progressMessages = [
+            "paying for inference...",
+            "waiting for LLM response...",
+            "generating code...",
+            "still working...",
+            "almost there...",
+          ];
+
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            let progressIdx = 0;
+            const heartbeat = setInterval(() => {
+              const msg = progressMessages[progressIdx % progressMessages.length];
+              send("progress", { agent: displayName, message: msg });
+              progressIdx++;
+            }, 5000);
+
+            try {
+              const agentCid = channelId || crypto.randomUUID();
+              response = await callAgent(agentId, taskMsg, agentCid);
+              clearInterval(heartbeat);
+              if (response) break;
+            } catch {
+              clearInterval(heartbeat);
+            }
+
+            if (attempt < maxRetries) {
+              send("thinking", { agent: displayName, status: "retrying" });
+              await new Promise(r => setTimeout(r, 5000));
+            }
+          }
+
+          if (response) {
+            // Charge user + pay agent
+            let newBalance: number | undefined;
+            if (walletAddress && response) {
+              const result = await chargeUser(walletAddress, displayName, task || message);
+              if (result) newBalance = result.balance;
+            }
+
+            send("agent_response", {
+              agent: displayName,
+              agentId,
+              task: task || message,
+              response,
+              balance: newBalance,
+              cost: USER_COST,
+            });
+
+            // Detect repo creation
+            const githubAgent = GITHUB_AGENTS[agentName];
+            if (githubAgent) {
+              const mentionsRepo = /repo|project|created|creating|check out|scaffold|commit|stand by|building/i.test(response);
+              const hasCodeBlocks = /```|file:/i.test(response);
+
+              if (mentionsRepo || hasCodeBlocks) {
+                send("progress", { agent: displayName, message: "pushing to GitHub..." });
+                await new Promise(r => setTimeout(r, 10000));
+
+                let repoFound = false;
+                if (githubAgent.token) {
+                  for (let check = 0; check < 3 && !repoFound; check++) {
+                    try {
+                      const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=3`, {
+                        headers: { Authorization: `Bearer ${githubAgent.token}` },
+                      });
+                      const repos = await reposRes.json();
+                      if (Array.isArray(repos)) {
+                        for (const repo of repos) {
+                          const createdAt = new Date(repo.created_at).getTime();
+                          if (Date.now() - createdAt < 300000) {
+                            send("action", {
+                              type: "repo_created",
+                              agent: displayName,
+                              repo: repo.full_name,
+                              url: `https://github.com/${repo.full_name}`,
+                            });
+                            repoFound = true;
+                            break;
+                          }
+                        }
+                      }
+                    } catch {}
+                    if (!repoFound) await new Promise(r => setTimeout(r, 5000));
+                  }
+                }
+
+                if (!repoFound && mentionsRepo) {
+                  const repoNameMatch = response.match(/(?:solanacloud-\w+\/[\w-]+)/i)
+                    || response.match(/(?:repo|repository)\s+(?:named?\s+)?["']?([\w-]+)/i);
+                  const repoName = repoNameMatch
+                    ? (repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`)
+                    : `${githubAgent.user}/latest`;
+                  send("action", {
+                    type: "repo_created",
+                    agent: displayName,
+                    repo: repoName,
+                    url: `https://github.com/${repoName}`,
+                  });
+                }
+              }
+            }
+          } else {
+            send("agent_error", { agent: displayName, error: "No response after retries" });
+          }
+
+          send("done", { status: "complete" });
+        } catch (err: unknown) {
+          const errorMsg = err instanceof Error ? err.message : "Unknown error";
+          send("error", { error: errorMsg });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+
+  // ── Step 3: Victor reviews (called after all tasks complete) ──
+  if (step === "review") {
+    const victorId = AGENT_IDS["victor"];
+    const reviewMsg = `Review the code below. Start your response with APPROVED or NEEDS CHANGES, then list up to 5 specific issues you found (bugs, security, missing error handling). Do NOT create repos, do NOT ask for more code, do NOT delegate. Just review what you see.\n\n${message}`;
+
+    const encoder = new TextEncoder();
+    const readable = new ReadableStream({
+      async start(controller) {
+        function send(event: string, data: unknown) {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        }
+
+        try {
+          send("thinking", { agent: "Victor", status: "reviewing" });
+
+          const heartbeat = setInterval(() => {
+            send("progress", { agent: "Victor", message: "reviewing code..." });
+          }, 5000);
+
+          const response = await callAgent(victorId, reviewMsg, crypto.randomUUID());
+          clearInterval(heartbeat);
+
+          if (response) {
+            if (walletAddress) {
+              await chargeUser(walletAddress, "Victor", "Code review");
+            }
+            send("agent_response", { agent: "Victor", agentId: victorId, task: "Code review", response });
+          } else {
+            send("agent_error", { agent: "Victor", error: "No response" });
+          }
+
+          send("done", { status: "complete" });
+        } catch (err: unknown) {
+          const errorMsg = err instanceof Error ? err.message : "Unknown error";
+          send("error", { error: errorMsg });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+
+  // ── Direct agent call (legacy) ──
   if (agentId) {
     const text = await callAgent(agentId, message, channelId);
     return NextResponse.json({ text: text || "No response", agentId });
   }
 
-  // ── Atlas routing with streaming ──
-  if (step === "atlas" || !step) {
-    const stream = step === "atlas"; // stream when called from frontend
-
-    if (stream) {
-      // SSE: send events as each agent responds
-      const encoder = new TextEncoder();
-      const readable = new ReadableStream({
-        async start(controller) {
-          function send(event: string, data: unknown) {
-            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-          }
-
-          try {
-            // 1. Atlas decides who to delegate to
-            send("thinking", { agent: "Atlas", status: "routing" });
-
-            let delegations: Delegation[] = [];
-
-            // Atlas LLM decides — no timeout, waits as long as needed
-            const atlasHeartbeat = setInterval(() => {
-              send("progress", { agent: "Atlas", message: "analyzing your request..." });
-            }, 5000);
-
-            try {
-              const atlasRaw = await callAgent(ATLAS_ID, message, crypto.randomUUID());
-              clearInterval(atlasHeartbeat);
-              delegations = parseAtlasDelegations(atlasRaw);
-            } catch {
-              clearInterval(atlasHeartbeat);
-              // Atlas failed — use keyword routing as fallback
-              send("progress", { agent: "Atlas", message: "using fast routing..." });
-            }
-
-            // Fallback to keyword routing if Atlas couldn't delegate
-            if (delegations.length === 0) {
-              delegations = routeByKeywords(message);
-            }
-
-            send("delegations", { delegations });
-
-            // 2. Call each agent SEQUENTIALLY with delay + retry
-            for (let i = 0; i < delegations.length; i++) {
-              const delegation = delegations[i];
-              const agentName = delegation.delegate.toLowerCase();
-              const targetId = AGENT_IDS[agentName];
-
-              if (!targetId) {
-                send("agent_error", { agent: delegation.delegate, error: `Agent not found` });
-                continue;
-              }
-
-              // Wait between agents to avoid x402 rate limit
-              if (i > 0) {
-                send("thinking", { agent: delegation.delegate, status: "waiting", task: "waiting for rate limit..." });
-                await new Promise(r => setTimeout(r, 8000));
-              }
-
-              send("thinking", { agent: delegation.delegate, status: "working", task: delegation.task });
-
-              // Call agent with progress heartbeats
-              let response = "";
-              const maxRetries = 2;
-              const progressMessages = [
-                "paying for inference...",
-                "waiting for LLM response...",
-                "generating code...",
-                "still working...",
-                "almost there...",
-              ];
-
-              for (let attempt = 0; attempt <= maxRetries; attempt++) {
-                // Start heartbeat that sends progress every 5s
-                let progressIdx = 0;
-                const heartbeat = setInterval(() => {
-                  const msg = progressMessages[progressIdx % progressMessages.length];
-                  send("progress", { agent: delegation.delegate, message: msg });
-                  progressIdx++;
-                }, 5000);
-
-                try {
-                  const agentCid = crypto.randomUUID();
-                  const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
-                  response = await callAgent(targetId, taskMsg, agentCid);
-                  clearInterval(heartbeat);
-                  if (response) break;
-                } catch {
-                  clearInterval(heartbeat);
-                }
-
-                if (attempt < maxRetries) {
-                  send("thinking", { agent: delegation.delegate, status: "retrying", task: `retry ${attempt + 1}/${maxRetries}...` });
-                  await new Promise(r => setTimeout(r, 5000));
-                }
-              }
-
-              if (response) {
-                // Charge user + pay agent
-                let newBalance: number | undefined;
-                if (walletAddress && response) {
-                  const result = await chargeUser(walletAddress, delegation.delegate, delegation.task);
-                  if (result) newBalance = result.balance;
-                }
-
-                send("agent_response", {
-                  agent: delegation.delegate,
-                  agentId: targetId,
-                  task: delegation.task,
-                  response,
-                  balance: newBalance,
-                  cost: USER_COST,
-                });
-
-                // Detect repo creation
-                const githubAgent = GITHUB_AGENTS[agentName];
-                if (githubAgent) {
-                  const mentionsRepo = /repo|project|created|creating|check out|scaffold|commit|stand by|building/i.test(response);
-                  const hasCodeBlocks = /```|file:/i.test(response);
-
-                  if (mentionsRepo || hasCodeBlocks) {
-                    // Wait for ElizaOS CREATE_PROJECT action to finish
-                    send("progress", { agent: delegation.delegate, message: "pushing to GitHub..." });
-                    await new Promise(r => setTimeout(r, 10000));
-
-                    // Try GitHub API with token — check last 3 repos
-                    let repoFound = false;
-                    if (githubAgent.token) {
-                      for (let check = 0; check < 3 && !repoFound; check++) {
-                        try {
-                          const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=3`, {
-                            headers: { Authorization: `Bearer ${githubAgent.token}` },
-                          });
-                          const repos = await reposRes.json();
-                          if (Array.isArray(repos)) {
-                            for (const repo of repos) {
-                              const createdAt = new Date(repo.created_at).getTime();
-                              if (Date.now() - createdAt < 300000) {
-                                send("action", {
-                                  type: "repo_created",
-                                  agent: delegation.delegate,
-                                  repo: repo.full_name,
-                                  url: `https://github.com/${repo.full_name}`,
-                                });
-                                repoFound = true;
-                                break;
-                              }
-                            }
-                          }
-                        } catch {}
-                        if (!repoFound) await new Promise(r => setTimeout(r, 5000));
-                      }
-                    }
-
-                    // Fallback: extract repo name from response text
-                    if (!repoFound && mentionsRepo) {
-                      const repoNameMatch = response.match(/(?:solanacloud-\w+\/[\w-]+)/i)
-                        || response.match(/(?:repo|repository)\s+(?:named?\s+)?["']?([\w-]+)/i);
-                      const repoName = repoNameMatch
-                        ? (repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`)
-                        : `${githubAgent.user}/latest`;
-                      send("action", {
-                        type: "repo_created",
-                        agent: delegation.delegate,
-                        repo: repoName,
-                        url: `https://github.com/${repoName}`,
-                      });
-                    }
-                  }
-                }
-              } else {
-                send("agent_error", { agent: delegation.delegate, error: "No response after retries" });
-              }
-            }
-
-            send("done", { status: "complete", hint: "Say 'deploy' to deploy the repos to production" });
-          } catch (err: unknown) {
-            const errorMsg = err instanceof Error ? err.message : "Unknown error";
-            send("error", { error: errorMsg });
-          } finally {
-            controller.close();
-          }
-        },
-      });
-
-      return new Response(readable, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive",
-        },
-      });
-    }
-
-    // Non-streaming fallback
-    let delegations: Delegation[] = [];
-    try {
-      const atlasRaw = await callAgent(ATLAS_ID, message, crypto.randomUUID());
-      delegations = parseAtlasDelegations(atlasRaw);
-    } catch {}
-    if (delegations.length === 0) delegations = routeByKeywords(message);
-    const agentResponses = await executeDelegations(delegations, message, walletAddress);
-
-    return NextResponse.json({
-      step: "complete",
-      delegations,
-      agentResponses,
-      text: formatResponses(agentResponses),
-    });
-  }
-
   return NextResponse.json({ error: "Invalid step" }, { status: 400 });
-}
-
-// ── Execute delegations ──────────────────────────────────────────────
-
-async function executeDelegations(delegations: Delegation[], originalMessage: string, walletAddress?: string) {
-  const agentResponses: Array<{
-    agent: string;
-    agentId: string;
-    task: string;
-    response: string;
-    error?: string;
-  }> = [];
-
-  for (const delegation of delegations) {
-    const agentName = delegation.delegate.toLowerCase();
-    const targetId = AGENT_IDS[agentName];
-
-    if (!targetId) {
-      agentResponses.push({
-        agent: delegation.delegate,
-        agentId: "",
-        task: delegation.task,
-        response: "",
-        error: `Agent "${delegation.delegate}" not found`,
-      });
-      continue;
-    }
-
-    try {
-      const agentCid = crypto.randomUUID();
-      const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || originalMessage}`;
-      const response = await callAgent(targetId, taskMsg, agentCid);
-
-      // Charge user + pay agent
-      let newBalance: number | undefined;
-      if (walletAddress && response) {
-        const result = await chargeUser(walletAddress, delegation.delegate, delegation.task);
-        if (result) newBalance = result.balance;
-      }
-
-      agentResponses.push({
-        agent: delegation.delegate,
-        agentId: targetId,
-        task: delegation.task,
-        response: response || "No response",
-        balance: newBalance,
-        cost: USER_COST,
-      });
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      agentResponses.push({
-        agent: delegation.delegate,
-        agentId: targetId,
-        task: delegation.task,
-        response: "",
-        error: errorMsg,
-      });
-    }
-  }
-
-  return agentResponses;
-}
-
-// ── Format responses for display ─────────────────────────────────────
-
-function formatResponses(
-  agentResponses: Array<{ agent: string; response: string; error?: string }>,
-): string {
-  return agentResponses
-    .map((r) => {
-      const header = `**${r.agent}:**`;
-      const body = r.error ? `Error: ${r.error}` : r.response;
-      return `${header}\n${body}`;
-    })
-    .join("\n\n---\n\n");
 }
