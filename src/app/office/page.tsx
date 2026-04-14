@@ -330,6 +330,16 @@ export default function Home() {
                   updateTaskStatus(data.agent, "error");
                   break;
 
+                case "action":
+                  if (data.type === "repo_created") {
+                    setChat((p) => [...p, {
+                      role: "agent",
+                      text: `📦 Created repo **${data.repo}** → ${data.url}`,
+                      agentName: data.agent,
+                    }]);
+                  }
+                  break;
+
                 case "done":
                   setThinking(null);
                   break;

@@ -18,6 +18,15 @@ const AGENT_IDS: Record<string, string> = {
   alex: "64542dba-bb81-0fd4-86e0-cf4f319567c7",
 };
 
+// ── GitHub users per agent ───────────────────────────────────────────
+const GITHUB_USERS: Record<string, string> = {
+  mia: "solanacloud-mia",
+  sam: "solanacloud-sam",
+  rex: "solanacloud-rex",
+  victor: "solanacloud-victor",
+  zara: "solanacloud-zara",
+};
+
 // ── Call agent via ElizaOS API ────────────────────────────────────────
 
 async function callAgent(agentId: string, message: string, channelId?: string): Promise<string> {
@@ -166,6 +175,17 @@ export async function POST(req: NextRequest) {
               send("thinking", { agent: delegation.delegate, status: "working", task: delegation.task });
 
               try {
+                // Get repos before calling agent (to detect new repos)
+                const githubUser = GITHUB_USERS[agentName];
+                let reposBefore: string[] = [];
+                if (githubUser) {
+                  try {
+                    const reposRes = await fetch(`https://api.github.com/users/${githubUser}/repos?sort=created&per_page=5`);
+                    const repos = await reposRes.json();
+                    if (Array.isArray(repos)) reposBefore = repos.map((r: { name: string }) => r.name);
+                  } catch {}
+                }
+
                 const agentCid = crypto.randomUUID();
                 const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
                 const response = await callAgent(targetId, taskMsg, agentCid);
@@ -175,6 +195,28 @@ export async function POST(req: NextRequest) {
                   task: delegation.task,
                   response: response || "No response",
                 });
+
+                // Check if agent created a new repo
+                if (githubUser) {
+                  // Wait a moment for GitHub API to reflect the new repo
+                  await new Promise(r => setTimeout(r, 2000));
+                  try {
+                    const reposRes = await fetch(`https://api.github.com/users/${githubUser}/repos?sort=created&per_page=5`);
+                    const repos = await reposRes.json();
+                    if (Array.isArray(repos)) {
+                      const newRepos = repos.filter((r: { name: string }) => !reposBefore.includes(r.name));
+                      for (const repo of newRepos) {
+                        send("action", {
+                          type: "repo_created",
+                          agent: delegation.delegate,
+                          repo: repo.full_name,
+                          url: repo.html_url,
+                          files: repo.size > 0 ? "with files" : "empty",
+                        });
+                      }
+                    }
+                  } catch {}
+                }
               } catch (err: unknown) {
                 const errorMsg = err instanceof Error ? err.message : "Unknown error";
                 send("agent_error", { agent: delegation.delegate, error: errorMsg });
