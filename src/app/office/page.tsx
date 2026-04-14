@@ -381,6 +381,9 @@ export default function Home() {
 
                 case "done":
                   setThinking(null);
+                  if (data.hint) {
+                    setChat((p) => [...p, { role: "nova", text: `💡 ${data.hint}` }]);
+                  }
                   break;
 
                 case "error":
