@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { connectDB } from "@/lib/db";
+import { User, Transaction } from "@/lib/models";
+import { payAgent } from "@/lib/pay-agent";
+import { USER_COST } from "@/lib/agent-wallets";
 
 const API_BASE = process.env.ELIZAOS_API_URL || "http://72.62.176.85:3003";
 const USER_ID = "11111111-1111-1111-1111-111111111111";
@@ -122,11 +126,54 @@ function parseAtlasDelegations(response: string): Delegation[] {
 
 // ── API Route ────────────────────────────────────────────────────────
 
+async function chargeUser(walletAddress: string, agentName: string, task: string): Promise<{ balance: number } | null> {
+  try {
+    await connectDB();
+    const user = await User.findOneAndUpdate(
+      { walletAddress, balance: { $gte: USER_COST } },
+      { $inc: { balance: -USER_COST, totalSpent: USER_COST } },
+      { new: true }
+    );
+    if (!user) return null;
+
+    await Transaction.create({
+      walletAddress,
+      type: "spend",
+      amount: USER_COST,
+      agentName,
+      task,
+    });
+
+    // Pay agent on-chain (async)
+    payAgent(agentName).then((r) => {
+      if (r.success) console.log(`Paid ${agentName}: ${r.txSignature}`);
+      else console.error(`Failed to pay ${agentName}: ${r.error}`);
+    });
+
+    return { balance: user.balance };
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
-  const { message, agentId, channelId, step } = await req.json();
+  const { message, agentId, channelId, step, walletAddress } = await req.json();
 
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
+  }
+
+  // Check balance if wallet provided
+  if (walletAddress) {
+    await connectDB();
+    const user = await User.findOne({ walletAddress });
+    if (!user || user.balance < USER_COST) {
+      return NextResponse.json({
+        error: "Insufficient credits",
+        balance: user?.balance || 0,
+        required: USER_COST,
+      }, { status: 402 });
+    }
   }
 
   // ── Direct agent call ──
@@ -200,11 +247,20 @@ export async function POST(req: NextRequest) {
               }
 
               if (response) {
+                // Charge user + pay agent
+                let newBalance: number | undefined;
+                if (walletAddress && response) {
+                  const result = await chargeUser(walletAddress, delegation.delegate, delegation.task);
+                  if (result) newBalance = result.balance;
+                }
+
                 send("agent_response", {
                   agent: delegation.delegate,
                   agentId: targetId,
                   task: delegation.task,
                   response,
+                  balance: newBalance,
+                  cost: USER_COST,
                 });
               } else {
                 send("agent_error", { agent: delegation.delegate, error: "No response after retries" });
@@ -263,7 +319,7 @@ export async function POST(req: NextRequest) {
       delegations.push({ delegate: fallbackAgent, task: message });
     }
 
-    const agentResponses = await executeDelegations(delegations, message);
+    const agentResponses = await executeDelegations(delegations, message, walletAddress);
 
     return NextResponse.json({
       step: "complete",
@@ -279,7 +335,7 @@ export async function POST(req: NextRequest) {
 
 // ── Execute delegations ──────────────────────────────────────────────
 
-async function executeDelegations(delegations: Delegation[], originalMessage: string) {
+async function executeDelegations(delegations: Delegation[], originalMessage: string, walletAddress?: string) {
   const agentResponses: Array<{
     agent: string;
     agentId: string;
@@ -307,11 +363,21 @@ async function executeDelegations(delegations: Delegation[], originalMessage: st
       const agentCid = crypto.randomUUID();
       const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || originalMessage}`;
       const response = await callAgent(targetId, taskMsg, agentCid);
+
+      // Charge user + pay agent
+      let newBalance: number | undefined;
+      if (walletAddress && response) {
+        const result = await chargeUser(walletAddress, delegation.delegate, delegation.task);
+        if (result) newBalance = result.balance;
+      }
+
       agentResponses.push({
         agent: delegation.delegate,
         agentId: targetId,
         task: delegation.task,
         response: response || "No response",
+        balance: newBalance,
+        cost: USER_COST,
       });
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
