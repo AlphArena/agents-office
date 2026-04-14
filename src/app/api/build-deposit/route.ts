@@ -27,10 +27,22 @@ function getConn(): Connection {
 
 // POST /api/build-deposit — build a gasless USDC deposit tx (treasury pays gas)
 export async function POST(req: NextRequest) {
-  const { wallet, amount } = await req.json();
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
-  if (!wallet || !amount || amount <= 0) {
+  const { wallet, amount } = body;
+
+  if (!wallet || !amount || Number(amount) <= 0) {
     return NextResponse.json({ error: "wallet and amount required" }, { status: 400 });
+  }
+
+  const amountNum = Number(amount);
+  if (isNaN(amountNum) || amountNum <= 0) {
+    return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
   }
 
   try {
@@ -56,7 +68,7 @@ export async function POST(req: NextRequest) {
         USDC_MINT,
         destATA,
         userPubkey,
-        BigInt(amount),
+        BigInt(amountNum),
         USDC_DECIMALS,
       ),
     );
