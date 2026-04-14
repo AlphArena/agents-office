@@ -22,13 +22,13 @@ const AGENT_IDS: Record<string, string> = {
   alex: "64542dba-bb81-0fd4-86e0-cf4f319567c7",
 };
 
-// ── GitHub users per agent ───────────────────────────────────────────
-const GITHUB_USERS: Record<string, string> = {
-  mia: "solanacloud-mia",
-  sam: "solanacloud-sam",
-  rex: "solanacloud-rex",
-  victor: "solanacloud-victor",
-  zara: "solanacloud-zara",
+// ── GitHub per agent (user + token for API access) ──────────────────
+const GITHUB_AGENTS: Record<string, { user: string; token: string }> = {
+  mia: { user: "solanacloud-mia", token: process.env.MIA_GITHUB_TOKEN || "" },
+  sam: { user: "solanacloud-sam", token: process.env.SAM_GITHUB_TOKEN || "" },
+  rex: { user: "solanacloud-rex", token: process.env.REX_GITHUB_TOKEN || "" },
+  victor: { user: "solanacloud-victor", token: process.env.VICTOR_GITHUB_TOKEN || "" },
+  zara: { user: "solanacloud-zara", token: process.env.ZARA_GITHUB_TOKEN || "" },
 };
 
 // ── Call agent via ElizaOS API ────────────────────────────────────────
@@ -267,15 +267,16 @@ export async function POST(req: NextRequest) {
               }
 
               // Check if agent created a new repo on GitHub
-              const githubUser = GITHUB_USERS[agentName];
-              if (githubUser && response) {
-                await new Promise(r => setTimeout(r, 2000));
+              const githubAgent = GITHUB_AGENTS[agentName];
+              if (githubAgent?.token && response) {
+                await new Promise(r => setTimeout(r, 3000));
                 try {
-                  const reposRes = await fetch(`https://api.github.com/users/${githubUser}/repos?sort=created&per_page=1`);
+                  const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=1`, {
+                    headers: { Authorization: `Bearer ${githubAgent.token}` },
+                  });
                   const repos = await reposRes.json();
                   if (Array.isArray(repos) && repos.length > 0) {
                     const latest = repos[0];
-                    // If repo was created in the last 2 minutes, it's probably new
                     const createdAt = new Date(latest.created_at).getTime();
                     if (Date.now() - createdAt < 120000) {
                       send("action", {
