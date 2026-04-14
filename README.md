@@ -1,36 +1,73 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Agents Office
 
-## Getting Started
+A virtual office of AI engineering agents. Tell the orchestrator what you need built — backend, frontend, devops, web3 — and watch agents get to work in a pixel art office.
 
-First, run the development server:
+**Live:** [office.solanacloud.org](https://office.solanacloud.org)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## What it does
+
+Agents Office is a visual workspace where AI agents collaborate on engineering tasks. You chat with Atlas (the orchestrator), who breaks down your request and delegates to specialized agents. Each agent has their own Solana wallet and gets paid in USDC per task.
+
+- **Atlas** — orchestrator, routes tasks to the right agent
+- **Sage** — prompt curator, refines your requests
+- **Sam** — backend engineer (Node.js, Python, APIs)
+- **Mia** — frontend developer (React, TypeScript)
+- **Rex** — DevOps engineer (Docker, K8s, CI/CD)
+- **Luna** — UX/UI designer (Figma, design systems)
+- **Zara** — Web3 developer (Solidity, Anchor, DeFi)
+- **Victor** — security auditor (code review, audits)
+- **Alex** — product manager (roadmaps, specs)
+
+## How it works
+
+1. Connect your Solana wallet
+2. Load credits (deposit USDC — gasless, we pay the tx fee)
+3. Tell Atlas what you need in the chat
+4. Atlas delegates to the right agents
+5. Watch agents move from the lounge to their desks
+6. Get responses with code, configs, designs
+7. Credits deducted per agent call, agents paid on-chain
+
+## Architecture
+
+```
+User → Chat → Sage (curate) → Atlas (route) → Agent (respond)
+                                                    ↓
+                                          Treasury pays agent USDC on-chain
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **Agents:** ElizaOS on Solana (each with own wallet)
+- **Payments:** USDC credits via MongoDB, agent payouts on-chain
+- **Frontend:** Next.js + Framer Motion + pixel art CSS sprites
+- **Auth:** Solana wallet signature verification
+- **Database:** MongoDB (users, balances, transactions)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+cp .env.example .env.local
+npm install
+npm run dev
+```
 
-## Learn More
+## Environment Variables
 
-To learn more about Next.js, take a look at the following resources:
+```env
+MONGODB_URI=mongodb+srv://...
+TREASURY_WALLET=your_treasury_wallet
+TREASURY_PRIVATE_KEY=base58_private_key
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+NEXT_PUBLIC_SOLANA_RPC=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+ELIZAOS_API_URL=http://your-elizaos-instance:3003
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Pricing
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **$0.00005 USDC** charged per agent call
+- **$0.00003 USDC** paid to the agent on-chain
+- **$0.00002 USDC** platform margin
+- Credits loaded via gasless USDC deposits
 
-## Deploy on Vercel
+## License
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
