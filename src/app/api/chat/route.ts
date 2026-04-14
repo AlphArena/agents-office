@@ -200,25 +200,29 @@ export async function POST(req: NextRequest) {
     let delegations: Delegation[] = [];
 
     try {
-      const atlasPrompt = `You are a task router. Given the user request below, decide which agents should handle it and what each should do. Include the user's specific request in each task.
-
-Available agents:
-- Mia: frontend (React, Tailwind CSS, landing pages, UI components)
-- Sam: backend (Node.js, APIs, databases, auth)
-- Rex: DevOps (deploy, Docker, CI/CD, infrastructure)
-- Luna: UX/UI design (wireframes, design systems, accessibility)
-- Zara: Web3 (Solidity, Anchor, smart contracts, DeFi)
-- Victor: security auditor (code review, vulnerabilities)
-- Alex: product manager (roadmaps, user stories, OKRs)
-
-Respond ONLY with a JSON array. No explanation, no markdown, no text before or after. Example:
-[{"delegate":"Mia","task":"Build a landing page for a motorcycle shop with hero, catalog, and contact sections using React + Tailwind CSS"},{"delegate":"Rex","task":"Deploy the motorcycle landing page to production with Docker"}]
-
-User request: ${message}`;
-
-      const atlasRaw = await callAgent(ATLAS_ID, atlasPrompt, crypto.randomUUID());
+      const atlasRaw = await callAgent(ATLAS_ID, message, crypto.randomUUID());
       delegations = parseAtlasDelegations(atlasRaw);
     } catch {}
+
+    // Post-process: detect missing agents for multi-agent tasks
+    if (delegations.length > 0) {
+      const lower = message.toLowerCase();
+      const hasAgent = (name: string) => delegations.some(d => d.delegate.toLowerCase() === name);
+
+      const needsFrontend = /landing|page|frontend|ui|website/i.test(lower);
+      const needsBackend = /api|backend|endpoint|catalog|database/i.test(lower);
+      const needsDeploy = /deploy|production|server/i.test(lower);
+
+      if (needsFrontend && !hasAgent("mia")) {
+        delegations.push({ delegate: "Mia", task: `Build the frontend. User request: ${message}` });
+      }
+      if (needsBackend && !hasAgent("sam")) {
+        delegations.push({ delegate: "Sam", task: `Build the backend API. User request: ${message}` });
+      }
+      if (needsDeploy && !hasAgent("rex")) {
+        delegations.push({ delegate: "Rex", task: `Deploy to production. User request: ${message}` });
+      }
+    }
 
     return NextResponse.json({ delegations });
   }
