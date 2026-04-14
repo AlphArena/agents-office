@@ -305,9 +305,12 @@ export default function Home() {
                   } else if (data.status === "working") {
                     setThinking(`${data.agent} is working...`);
                     updateTaskStatus(data.agent, "working");
-                    // Move agent to desk
                     const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
                     if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
+                  } else if (data.status === "waiting") {
+                    setThinking(`Waiting before calling ${data.agent}...`);
+                  } else if (data.status === "retrying") {
+                    setThinking(`${data.agent} — retrying...`);
                   }
                   break;
 

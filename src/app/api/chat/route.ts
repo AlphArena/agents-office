@@ -162,8 +162,9 @@ export async function POST(req: NextRequest) {
 
             send("delegations", { delegations });
 
-            // 2. Call each agent and stream responses
-            for (const delegation of delegations) {
+            // 2. Call each agent SEQUENTIALLY with delay + retry
+            for (let i = 0; i < delegations.length; i++) {
+              const delegation = delegations[i];
               const agentName = delegation.delegate.toLowerCase();
               const targetId = AGENT_IDS[agentName];
 
@@ -172,54 +173,64 @@ export async function POST(req: NextRequest) {
                 continue;
               }
 
+              // Wait between agents to avoid x402 rate limit
+              if (i > 0) {
+                send("thinking", { agent: delegation.delegate, status: "waiting", task: "waiting for rate limit..." });
+                await new Promise(r => setTimeout(r, 8000));
+              }
+
               send("thinking", { agent: delegation.delegate, status: "working", task: delegation.task });
 
-              try {
-                // Get repos before calling agent (to detect new repos)
-                const githubUser = GITHUB_USERS[agentName];
-                let reposBefore: string[] = [];
-                if (githubUser) {
-                  try {
-                    const reposRes = await fetch(`https://api.github.com/users/${githubUser}/repos?sort=created&per_page=5`);
-                    const repos = await reposRes.json();
-                    if (Array.isArray(repos)) reposBefore = repos.map((r: { name: string }) => r.name);
-                  } catch {}
-                }
+              // Try with retry on failure
+              let response = "";
+              const maxRetries = 2;
 
-                const agentCid = crypto.randomUUID();
-                const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
-                const response = await callAgent(targetId, taskMsg, agentCid);
+              for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                  const agentCid = crypto.randomUUID();
+                  const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
+                  response = await callAgent(targetId, taskMsg, agentCid);
+                  if (response) break;
+                } catch {}
+
+                if (attempt < maxRetries) {
+                  send("thinking", { agent: delegation.delegate, status: "retrying", task: `retry ${attempt + 1}/${maxRetries}...` });
+                  await new Promise(r => setTimeout(r, 5000));
+                }
+              }
+
+              if (response) {
                 send("agent_response", {
                   agent: delegation.delegate,
                   agentId: targetId,
                   task: delegation.task,
-                  response: response || "No response",
+                  response,
                 });
+              } else {
+                send("agent_error", { agent: delegation.delegate, error: "No response after retries" });
+              }
 
-                // Check if agent created a new repo
-                if (githubUser) {
-                  // Wait a moment for GitHub API to reflect the new repo
-                  await new Promise(r => setTimeout(r, 2000));
-                  try {
-                    const reposRes = await fetch(`https://api.github.com/users/${githubUser}/repos?sort=created&per_page=5`);
-                    const repos = await reposRes.json();
-                    if (Array.isArray(repos)) {
-                      const newRepos = repos.filter((r: { name: string }) => !reposBefore.includes(r.name));
-                      for (const repo of newRepos) {
-                        send("action", {
-                          type: "repo_created",
-                          agent: delegation.delegate,
-                          repo: repo.full_name,
-                          url: repo.html_url,
-                          files: repo.size > 0 ? "with files" : "empty",
-                        });
-                      }
+              // Check if agent created a new repo on GitHub
+              const githubUser = GITHUB_USERS[agentName];
+              if (githubUser && response) {
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                  const reposRes = await fetch(`https://api.github.com/users/${githubUser}/repos?sort=created&per_page=1`);
+                  const repos = await reposRes.json();
+                  if (Array.isArray(repos) && repos.length > 0) {
+                    const latest = repos[0];
+                    // If repo was created in the last 2 minutes, it's probably new
+                    const createdAt = new Date(latest.created_at).getTime();
+                    if (Date.now() - createdAt < 120000) {
+                      send("action", {
+                        type: "repo_created",
+                        agent: delegation.delegate,
+                        repo: latest.full_name,
+                        url: latest.html_url,
+                      });
                     }
-                  } catch {}
-                }
-              } catch (err: unknown) {
-                const errorMsg = err instanceof Error ? err.message : "Unknown error";
-                send("agent_error", { agent: delegation.delegate, error: errorMsg });
+                  }
+                } catch {}
               }
             }
 
