@@ -122,6 +122,10 @@ export default function Home() {
   const [channelId, setChannelId] = useState(() => crypto.randomUUID());
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // ── Session Memory ──
+  const [sessionRepos, setSessionRepos] = useState<string[]>([]);
+  const [sessionHistory, setSessionHistory] = useState<string[]>([]);
+
   // ── Task Board ──
   interface TaskItem { id: number; agent: string; task: string; status: "pending" | "working" | "done" | "error" }
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -263,12 +267,22 @@ export default function Home() {
     setChat((p) => [...p, { role: "user", text: msg }]);
 
     try {
+      // Build message with session context
+      let fullMessage = msg;
+      if (sessionRepos.length > 0 || sessionHistory.length > 0) {
+        const context: string[] = [];
+        if (sessionRepos.length > 0) context.push(`Repos created in this session: ${sessionRepos.join(", ")}`);
+        if (sessionHistory.length > 0) context.push(`Previous tasks: ${sessionHistory.slice(-3).join("; ")}`);
+        fullMessage = `${msg}\n\n[Session context: ${context.join(". ")}]`;
+      }
+      setSessionHistory((p) => [...p, msg]);
+
       // Call Atlas with SSE streaming
       setThinking("Atlas is routing...");
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg, step: "atlas" }),
+        body: JSON.stringify({ message: fullMessage, step: "atlas" }),
       });
 
       // Process SSE stream
@@ -356,6 +370,7 @@ export default function Home() {
 
                 case "action":
                   if (data.type === "repo_created") {
+                    setSessionRepos((p) => [...p, data.repo]);
                     setChat((p) => [...p, {
                       role: "agent",
                       text: `📦 Created repo **${data.repo}** → ${data.url}`,
