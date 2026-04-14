@@ -238,17 +238,35 @@ export async function POST(req: NextRequest) {
 
               send("thinking", { agent: delegation.delegate, status: "working", task: delegation.task });
 
-              // Try with retry on failure
+              // Call agent with progress heartbeats
               let response = "";
               const maxRetries = 2;
+              const progressMessages = [
+                "paying for inference...",
+                "waiting for LLM response...",
+                "generating code...",
+                "still working...",
+                "almost there...",
+              ];
 
               for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                // Start heartbeat that sends progress every 5s
+                let progressIdx = 0;
+                const heartbeat = setInterval(() => {
+                  const msg = progressMessages[progressIdx % progressMessages.length];
+                  send("progress", { agent: delegation.delegate, message: msg });
+                  progressIdx++;
+                }, 5000);
+
                 try {
                   const agentCid = crypto.randomUUID();
                   const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
                   response = await callAgent(targetId, taskMsg, agentCid);
+                  clearInterval(heartbeat);
                   if (response) break;
-                } catch {}
+                } catch {
+                  clearInterval(heartbeat);
+                }
 
                 if (attempt < maxRetries) {
                   send("thinking", { agent: delegation.delegate, status: "retrying", task: `retry ${attempt + 1}/${maxRetries}...` });

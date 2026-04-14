@@ -326,6 +326,18 @@ export default function Home() {
                   break;
                 }
 
+                case "progress":
+                  setThinking(`${data.agent}: ${data.message}`);
+                  setChat((p) => {
+                    // Update the last progress message instead of adding new ones
+                    const last = p[p.length - 1];
+                    if (last?.role === "nova" && last.text.startsWith("⏳")) {
+                      return [...p.slice(0, -1), { role: "nova" as const, text: `⏳ ${data.agent}: ${data.message}` }];
+                    }
+                    return [...p, { role: "nova" as const, text: `⏳ ${data.agent}: ${data.message}` }];
+                  });
+                  break;
+
                 case "agent_response": {
                   setChat((p) => [...p, { role: "agent", text: data.response, agentName: data.agent }]);
                   updateTaskStatus(data.agent, "done");
