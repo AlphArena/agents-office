@@ -453,24 +453,31 @@ export default function Home() {
         }
 
         // Execute this agent
-        const agentRes = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: fullMessage,
-            step: "execute",
-            agentId: targetId,
-            task: delegation.task,
-            channelId,
-            walletAddress: publicKey.toBase58(),
-          }),
-        });
+        try {
+          const agentRes = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: fullMessage,
+              step: "execute",
+              agentId: targetId,
+              task: delegation.task,
+              channelId,
+              walletAddress: publicKey.toBase58(),
+            }),
+          });
 
-        const { success, repos, agentResponse } = await processAgentStream(agentRes);
-        if (success) {
-          agentOutputs.push({ agent: delegation.delegate, task: delegation.task, response: agentResponse });
+          const { success, repos, agentResponse } = await processAgentStream(agentRes);
+          if (success) {
+            agentOutputs.push({ agent: delegation.delegate, task: delegation.task, response: agentResponse });
+          }
+          allRepos.push(...repos);
+        } catch {
+          setChat((p) => [...p, { role: "agent", text: "Error: agent unreachable, skipping", agentName: delegation.delegate }]);
+          updateTaskStatus(delegation.delegate, "error");
+          const errAgent = agentDefs.find((a) => a.name.toLowerCase() === delegation.delegate.toLowerCase());
+          if (errAgent) finishTask(errAgent.id);
         }
-        allRepos.push(...repos);
       }
 
       // ── Step 3: Victor reviews with actual agent output ──
