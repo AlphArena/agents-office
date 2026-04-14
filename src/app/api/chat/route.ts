@@ -35,28 +35,56 @@ const GITHUB_AGENTS: Record<string, { user: string; token: string }> = {
 
 async function callAgent(agentId: string, message: string, channelId?: string): Promise<string> {
   const cid = channelId || crypto.randomUUID();
-  const res = await fetch(`${API_BASE}/api/messaging/channels/${cid}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      channelId: cid,
-      author_id: USER_ID,
-      content: message,
-      message_server_id: "00000000-0000-0000-0000-000000000000",
-      source_type: "eliza_gui",
-      raw_message: { text: message },
-      transport: "http",
-      metadata: {
-        isDm: true,
-        targetAgentId: agentId,
-        targetUserId: agentId,
-        recipientId: agentId,
-        user_display_name: "Agents Office",
-      },
-    }),
+  const body = JSON.stringify({
+    channelId: cid,
+    author_id: USER_ID,
+    content: message,
+    message_server_id: "00000000-0000-0000-0000-000000000000",
+    source_type: "eliza_gui",
+    raw_message: { text: message },
+    transport: "http",
+    metadata: {
+      isDm: true,
+      targetAgentId: agentId,
+      targetUserId: agentId,
+      recipientId: agentId,
+      user_display_name: "Agents Office",
+    },
   });
-  const data = await res.json();
-  return data.agentResponse?.text || "";
+
+  // Retry up to 2 times on failure
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+
+      const res = await fetch(`${API_BASE}/api/messaging/channels/${cid}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const data = await res.json();
+      const text = data.agentResponse?.text || "";
+      if (text) return text;
+
+      // Empty response — retry with new channel
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      return "";
+    } catch {
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      throw new Error("Agent unreachable after retries");
+    }
+  }
+  return "";
 }
 
 // ── Keyword routing fallback ─────────────────────────────────────────
