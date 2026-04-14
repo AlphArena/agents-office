@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
     const needsFrontend = /landing|page|frontend|ui|website|css|html|react|component/i.test(lower);
     const needsBackend = /api|backend|endpoint|catalog|database|rest|graphql|server/i.test(lower);
     const needsDeploy = /deploy|deploya|desplega|production|infrastructure|docker/i.test(lower);
-    const needsWeb3 = /blockchain|solidity|solana|smart\s*contract|web3|defi|token|anchor/i.test(lower);
+    const needsWeb3 = /block\s*chain|blockchain|blockch|solidity|solana|smart\s*contract|web3|defi|token|anchor|crypto/i.test(lower);
     const needsDesign = /design|ux|wireframe|figma|prototype/i.test(lower);
     const needsPM = /roadmap|okr|user\s+stor|sprint|product\s+manag/i.test(lower);
 
@@ -390,63 +390,36 @@ Respond with ONLY code. No questions. No asking for details. Use sample data if 
 
   // ── Step 3: Victor reviews (called after all tasks complete) ──
   if (step === "review") {
-    const victorId = AGENT_IDS["victor"];
-    // Only send to Victor if there's actual code to review
+    // Victor reviews locally — the x402 LLM is too weak for reliable reviews
     const hasCode = /```|file:|function |const |import |class |def |app\./i.test(message);
-    if (!hasCode) {
-      // No real code to review — auto-approve
-      const encoder = new TextEncoder();
-      const readable = new ReadableStream({
-        start(controller) {
-          function send(event: string, data: unknown) {
-            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-          }
-          send("thinking", { agent: "Victor", status: "reviewing" });
-          send("agent_response", { agent: "Victor", agentId: AGENT_IDS["victor"], task: "Code review", response: "APPROVED — no code issues detected." });
-          send("done", { status: "complete" });
-          controller.close();
-        },
-      });
-      return new Response(readable, {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
-      });
-    }
 
-    const reviewMsg = `Is this code safe? Say APPROVED or NEEDS CHANGES. List real bugs only.\n\n${message}`;
+    // Build automated review
+    const issues: string[] = [];
+    if (/eval\(|innerHTML|dangerouslySetInnerHTML/i.test(message)) issues.push("XSS risk: eval/innerHTML/dangerouslySetInnerHTML detected");
+    if (/password|secret|api.?key|private.?key/i.test(message) && !/process\.env|env\./i.test(message)) issues.push("Hardcoded secrets detected — use environment variables");
+    if (/SELECT.*\+.*req\.|query\s*\(/i.test(message) && !/\$\d|\?/i.test(message)) issues.push("Potential SQL injection — use parameterized queries");
+    if (/http:\/\/(?!localhost|127\.0\.0\.1)/i.test(message)) issues.push("Using HTTP instead of HTTPS for external URLs");
+    if (/TODO|FIXME|HACK/i.test(message)) issues.push("Contains TODO/FIXME comments — incomplete implementation");
+    if (/console\.log/i.test(message)) issues.push("Console.log statements left in code — remove for production");
+    if (!hasCode) issues.push("No code was provided by the agents");
+
+    const verdict = issues.length > 2 ? "NEEDS CHANGES" : "APPROVED";
+    const reviewResponse = issues.length > 0
+      ? `${verdict}\n\n${issues.map((issue, i) => `${i + 1}. ${issue}`).join("\n")}`
+      : "APPROVED — code looks clean, no issues detected.";
+
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
-      async start(controller) {
+      start(controller) {
         function send(event: string, data: unknown) {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         }
 
-        try {
-          send("thinking", { agent: "Victor", status: "reviewing" });
-
-          const heartbeat = setInterval(() => {
-            send("progress", { agent: "Victor", message: "reviewing code..." });
-          }, 5000);
-
-          const response = await callAgent(victorId, reviewMsg, crypto.randomUUID());
-          clearInterval(heartbeat);
-
-          if (response) {
-            if (walletAddress) {
-              await chargeUser(walletAddress, "Victor", "Code review");
-            }
-            send("agent_response", { agent: "Victor", agentId: victorId, task: "Code review", response });
-          } else {
-            send("agent_error", { agent: "Victor", error: "No response" });
-          }
-
-          send("done", { status: "complete" });
-        } catch (err: unknown) {
-          const errorMsg = err instanceof Error ? err.message : "Unknown error";
-          send("error", { error: errorMsg });
-        } finally {
-          controller.close();
-        }
+        send("thinking", { agent: "Victor", status: "reviewing" });
+        send("agent_response", { agent: "Victor", agentId: AGENT_IDS["victor"], task: "Code review", response: reviewResponse });
+        send("done", { status: "complete" });
+        controller.close();
       },
     });
 
