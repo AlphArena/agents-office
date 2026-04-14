@@ -197,8 +197,29 @@ export async function POST(req: NextRequest) {
 
   // ── Step 1: Atlas planning — returns task list only ──
   if (step === "atlas") {
-    // Use keyword routing (instant, reliable) — Atlas LLM was too unreliable for JSON output
-    const delegations = routeByKeywords(message);
+    let delegations: Delegation[] = [];
+
+    try {
+      const atlasPrompt = `You are a task router. Given the user request below, decide which agents should handle it and what each should do. Include the user's specific request in each task.
+
+Available agents:
+- Mia: frontend (React, Tailwind CSS, landing pages, UI components)
+- Sam: backend (Node.js, APIs, databases, auth)
+- Rex: DevOps (deploy, Docker, CI/CD, infrastructure)
+- Luna: UX/UI design (wireframes, design systems, accessibility)
+- Zara: Web3 (Solidity, Anchor, smart contracts, DeFi)
+- Victor: security auditor (code review, vulnerabilities)
+- Alex: product manager (roadmaps, user stories, OKRs)
+
+Respond ONLY with a JSON array. No explanation, no markdown, no text before or after. Example:
+[{"delegate":"Mia","task":"Build a landing page for a motorcycle shop with hero, catalog, and contact sections using React + Tailwind CSS"},{"delegate":"Rex","task":"Deploy the motorcycle landing page to production with Docker"}]
+
+User request: ${message}`;
+
+      const atlasRaw = await callAgent(ATLAS_ID, atlasPrompt, crypto.randomUUID());
+      delegations = parseAtlasDelegations(atlasRaw);
+    } catch {}
+
     return NextResponse.json({ delegations });
   }
 
@@ -310,7 +331,7 @@ RULES:
                       if (Array.isArray(repos)) {
                         for (const repo of repos) {
                           const createdAt = new Date(repo.created_at).getTime();
-                          if (Date.now() - createdAt < 300000) {
+                          if (Date.now() - createdAt < 600000) {
                             send("action", {
                               type: "repo_created",
                               agent: displayName,
@@ -330,15 +351,16 @@ RULES:
                 if (!repoFound && mentionsRepo) {
                   const repoNameMatch = response.match(/(?:solanacloud-\w+\/[\w-]+)/i)
                     || response.match(/(?:repo|repository)\s+(?:named?\s+)?["']?([\w-]+)/i);
-                  const repoName = repoNameMatch
-                    ? (repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`)
-                    : `${githubAgent.user}/latest`;
-                  send("action", {
-                    type: "repo_created",
-                    agent: displayName,
-                    repo: repoName,
-                    url: `https://github.com/${repoName}`,
-                  });
+                  if (repoNameMatch) {
+                    const repoName = repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`;
+                    send("action", {
+                      type: "repo_created",
+                      agent: displayName,
+                      repo: repoName,
+                      url: `https://github.com/${repoName}`,
+                    });
+                  }
+                  // No fallback — don't show a fake repo link
                 }
               }
             }

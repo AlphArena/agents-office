@@ -290,14 +290,17 @@ export default function Home() {
                   setThinking(`${data.agent} is working...`);
                   setChat((p) => [...p, { role: "nova", text: `⚡ ${data.agent} started working: ${data.task || ""}` }]);
                   updateTaskStatus(data.agent, "working");
-                  const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
-                  if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
+                  const workingAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                  if (workingAgent) assignTask(workingAgent.id, data.task?.slice(0, 30) || "working");
                 } else if (data.status === "retrying") {
                   setThinking(`${data.agent} — retrying...`);
                   setChat((p) => [...p, { role: "nova", text: `🔄 ${data.agent} — retrying...` }]);
                 } else if (data.status === "reviewing") {
                   setThinking("Victor is reviewing...");
                   setChat((p) => [...p, { role: "nova", text: `🔍 Victor is reviewing the work...` }]);
+                  // Move Victor to desk
+                  const victorAgent = agentDefs.find((a) => a.name === "Victor");
+                  if (victorAgent) assignTask(victorAgent.id, "reviewing code");
                 }
                 break;
 
@@ -388,8 +391,9 @@ export default function Home() {
       setSessionHistory((p) => [...p, msg]);
 
       // ── Step 1: Atlas plans — returns task list only ──
-      setThinking("Atlas is planning...");
-      setChat((p) => [...p, { role: "nova", text: "Planning tasks..." }]);
+      setThinking("Atlas is thinking...");
+      setChat((p) => [...p, { role: "nova", text: "Atlas is thinking..." }]);
+      setOrchestratorBubble("thinking...");
 
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
@@ -408,20 +412,33 @@ export default function Home() {
         return;
       }
 
-      const atlasData = await atlasRes.json();
-      const delegations: { delegate: string; task: string }[] = atlasData.delegations || [];
+      let atlasData = await atlasRes.json();
+      let delegations: { delegate: string; task: string }[] = atlasData.delegations || [];
+
+      // Retry once if Atlas returned empty
+      if (delegations.length === 0) {
+        setChat((p) => [...p, { role: "nova", text: "Atlas is re-thinking..." }]);
+        const retryRes = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: fullMessage, step: "atlas", walletAddress: publicKey?.toBase58() }),
+        });
+        atlasData = await retryRes.json();
+        delegations = atlasData.delegations || [];
+      }
 
       if (delegations.length === 0) {
         setThinking(null);
-        setChat((p) => [...p, { role: "nova", text: "No tasks to delegate." }]);
+        setOrchestratorBubble("");
+        setChat((p) => [...p, { role: "nova", text: "Atlas couldn't plan the tasks. Try rephrasing your request." }]);
         return;
       }
 
       // Show task board
       const names = delegations.map(d => d.delegate).join(" + ");
       setOrchestratorBubble(`→ ${names}`);
-      setTimeout(() => setOrchestratorBubble(""), 3000);
-      setChat((p) => [...p, { role: "nova", text: `Task list: ${delegations.map(d => `${d.delegate} → ${d.task}`).join(" | ")}` }]);
+      setTimeout(() => setOrchestratorBubble(""), 4000);
+      setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}` }]);
       addTasks(delegations);
 
       setThinking(null);
@@ -491,9 +508,14 @@ export default function Home() {
         });
 
         await processAgentStream(victorRes);
+
+        // Victor goes back to bench
+        const victorDef = agentDefs.find((a) => a.name === "Victor");
+        if (victorDef) finishTask(victorDef.id);
       }
 
       setThinking(null);
+      setOrchestratorBubble("");
       setChat((p) => [...p, { role: "nova", text: "💡 All done! Say 'deploy' to deploy to production" }]);
     } catch {
       setThinking(null);
