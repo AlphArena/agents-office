@@ -9,16 +9,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "wallet param required" }, { status: 400 });
   }
 
-  await connectDB();
-  const user = await User.findOne({ walletAddress: wallet });
+  try {
+    await connectDB();
+    const user = await User.findOne({ walletAddress: wallet });
 
-  if (!user) {
-    return NextResponse.json({ balance: 0, totalDeposited: 0, totalSpent: 0 });
+    if (!user) {
+      return NextResponse.json({ balance: 0, totalDeposited: 0, totalSpent: 0 });
+    }
+
+    return NextResponse.json({
+      balance: user.balance,
+      totalDeposited: user.totalDeposited,
+      totalSpent: user.totalSpent,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Balance API error:", message);
+    return NextResponse.json({ error: message, balance: 0 }, { status: 500 });
   }
-
-  return NextResponse.json({
-    balance: user.balance,
-    totalDeposited: user.totalDeposited,
-    totalSpent: user.totalSpent,
-  });
 }
