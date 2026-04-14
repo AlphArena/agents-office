@@ -220,23 +220,18 @@ export async function POST(req: NextRequest) {
 
             let delegations: Delegation[] = [];
 
-            // Try Atlas LLM with 30s timeout + heartbeat
+            // Atlas LLM decides — no timeout, waits as long as needed
             const atlasHeartbeat = setInterval(() => {
               send("progress", { agent: "Atlas", message: "analyzing your request..." });
             }, 5000);
 
             try {
-              const atlasPromise = callAgent(ATLAS_ID, message, crypto.randomUUID());
-              const timeoutPromise = new Promise<string>((_, reject) =>
-                setTimeout(() => reject(new Error("timeout")), 30000)
-              );
-              const atlasRaw = await Promise.race([atlasPromise, timeoutPromise]);
+              const atlasRaw = await callAgent(ATLAS_ID, message, crypto.randomUUID());
               clearInterval(atlasHeartbeat);
               delegations = parseAtlasDelegations(atlasRaw);
-              send("progress", { agent: "Atlas", message: "delegation decided" });
             } catch {
               clearInterval(atlasHeartbeat);
-              // Atlas timed out or failed — use keyword routing as fallback
+              // Atlas failed — use keyword routing as fallback
               send("progress", { agent: "Atlas", message: "using fast routing..." });
             }
 
