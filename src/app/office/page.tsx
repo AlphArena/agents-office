@@ -230,7 +230,6 @@ export default function Home() {
     // Confirm payment + deduct
     setTimeout(() => {
       setPayments((p) => p.map((pay) => pay.id === payId ? { ...pay, status: "confirmed" } : pay));
-      setBalance((b) => Math.max(0, parseFloat((b - agent.rate).toFixed(4))));
     }, 1500);
 
     // Agent stays at desk until finishTask is called
@@ -250,7 +249,7 @@ export default function Home() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, agentId, channelId }),
+      body: JSON.stringify({ message, agentId, channelId, walletAddress: publicKey?.toBase58() }),
     });
     const data = await res.json();
     return data.text || "";
@@ -282,8 +281,19 @@ export default function Home() {
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: fullMessage, step: "atlas" }),
+        body: JSON.stringify({ message: fullMessage, step: "atlas", walletAddress: publicKey?.toBase58() }),
       });
+
+      // Handle insufficient credits
+      if (atlasRes.status === 402) {
+        const errData = await atlasRes.json();
+        setThinking(null);
+        setChat((p) => [...p, {
+          role: "nova",
+          text: `Insufficient credits. Balance: ${((errData.balance || 0) / 1_000_000).toFixed(4)} USDC. [Load credits](/office/credits) to continue.`,
+        }]);
+        return;
+      }
 
       // Process SSE stream
       const reader = atlasRes.body?.getReader();
@@ -357,6 +367,8 @@ export default function Home() {
                   updateTaskStatus(data.agent, "done");
                   const doneAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
                   if (doneAgent) finishTask(doneAgent.id);
+                  // Update balance from backend
+                  if (data.balance !== undefined) setBalance(data.balance);
                   break;
                 }
 
