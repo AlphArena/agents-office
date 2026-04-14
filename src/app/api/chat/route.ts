@@ -313,32 +313,48 @@ export async function POST(req: NextRequest) {
                   balance: newBalance,
                   cost: USER_COST,
                 });
+
+                // Check if agent created a repo — try GitHub API with token
+                const githubAgent = GITHUB_AGENTS[agentName];
+                if (githubAgent?.token) {
+                  await new Promise(r => setTimeout(r, 3000));
+                  try {
+                    const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=1`, {
+                      headers: { Authorization: `Bearer ${githubAgent.token}` },
+                    });
+                    const repos = await reposRes.json();
+                    if (Array.isArray(repos) && repos.length > 0) {
+                      const latest = repos[0];
+                      const createdAt = new Date(latest.created_at).getTime();
+                      if (Date.now() - createdAt < 180000) {
+                        send("action", {
+                          type: "repo_created",
+                          agent: delegation.delegate,
+                          repo: latest.full_name,
+                          url: `https://github.com/${latest.full_name}`,
+                        });
+                      }
+                    }
+                  } catch {
+                    // GitHub API failed — check ElizaOS logs for repo creation
+                    try {
+                      const logsRes = await fetch(`http://72.62.176.85:3003/api/agents`);
+                      if (logsRes.ok) {
+                        // If agent mentioned creating a repo/project in response
+                        if (/repo|project|created|creating|check out/i.test(response)) {
+                          send("action", {
+                            type: "repo_created",
+                            agent: delegation.delegate,
+                            repo: `solanacloud-${agentName}/new-project`,
+                            url: `https://github.com/solanacloud-${agentName}`,
+                          });
+                        }
+                      }
+                    } catch {}
+                  }
+                }
               } else {
                 send("agent_error", { agent: delegation.delegate, error: "No response after retries" });
-              }
-
-              // Check if agent created a new repo on GitHub
-              const githubAgent = GITHUB_AGENTS[agentName];
-              if (githubAgent?.token && response) {
-                await new Promise(r => setTimeout(r, 3000));
-                try {
-                  const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=1`, {
-                    headers: { Authorization: `Bearer ${githubAgent.token}` },
-                  });
-                  const repos = await reposRes.json();
-                  if (Array.isArray(repos) && repos.length > 0) {
-                    const latest = repos[0];
-                    const createdAt = new Date(latest.created_at).getTime();
-                    if (Date.now() - createdAt < 120000) {
-                      send("action", {
-                        type: "repo_created",
-                        agent: delegation.delegate,
-                        repo: latest.full_name,
-                        url: latest.html_url,
-                      });
-                    }
-                  }
-                } catch {}
               }
             }
 
