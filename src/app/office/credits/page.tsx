@@ -5,17 +5,12 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useConnection } from "@solana/wallet-adapter-react";
-import { PublicKey, Transaction } from "@solana/web3.js";
-import { getAssociatedTokenAddressSync, createTransferCheckedInstruction } from "@solana/spl-token";
+import { Transaction } from "@solana/web3.js";
 
 const WalletMultiButton = dynamic(
   () => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton),
   { ssr: false }
 );
-
-const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-const TREASURY = new PublicKey("9mNuYKMeVMyGA8sfLSpmMvdQDmGi8R3izvsWyrdUZHww");
-const USDC_DECIMALS = 6;
 
 const PRESETS = [
   { label: "$0.10", amount: 100000 },
@@ -47,25 +42,32 @@ export default function CreditsPage() {
     setStatus("Building transaction...");
 
     try {
-      const sourceATA = getAssociatedTokenAddressSync(USDC_MINT, publicKey);
-      const destATA = getAssociatedTokenAddressSync(USDC_MINT, TREASURY);
-      const { blockhash } = await connection.getLatestBlockhash();
+      // Step 1: Backend builds the tx (treasury pays gas)
+      const buildRes = await fetch("/api/build-deposit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: publicKey.toBase58(), amount: amountAtomic }),
+      });
 
-      const tx = new Transaction({ feePayer: publicKey, recentBlockhash: blockhash });
-      tx.add(
-        createTransferCheckedInstruction(
-          sourceATA, USDC_MINT, destATA, publicKey,
-          BigInt(amountAtomic), USDC_DECIMALS,
-        ),
-      );
+      if (!buildRes.ok) {
+        const err = await buildRes.json();
+        throw new Error(err.error || "Failed to build transaction");
+      }
 
-      setStatus("Approve in your wallet...");
+      const { transaction: txBase64 } = await buildRes.json();
+
+      // Step 2: User signs (gasless — treasury already signed as feePayer)
+      setStatus("Approve USDC transfer (gasless)...");
+      const tx = Transaction.from(Buffer.from(txBase64, "base64"));
       const signed = await signTransaction(tx);
+
+      // Step 3: Send to Solana
       const txSig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true });
 
       setStatus("Confirming on Solana...");
       await new Promise((r) => setTimeout(r, 5000));
 
+      // Step 4: Verify deposit and add to balance
       setStatus("Verifying deposit...");
       const res = await fetch("/api/credits", {
         method: "POST",
