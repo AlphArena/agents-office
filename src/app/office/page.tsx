@@ -369,6 +369,17 @@ export default function Home() {
                   if (doneAgent) finishTask(doneAgent.id);
                   // Update balance from backend
                   if (data.balance !== undefined) setBalance(data.balance);
+
+                  // If Rex deployed something, try to detect the URL
+                  if (data.agent.toLowerCase() === "rex" && data.response) {
+                    const portMatch = data.response.match(/(?:port|:)\s*(\d{4,5})/i);
+                    if (portMatch) {
+                      setChat((p) => [...p, {
+                        role: "nova",
+                        text: `🚀 Live at: http://72.62.176.85:${portMatch[1]}`,
+                      }]);
+                    }
+                  }
                   break;
                 }
 
@@ -393,6 +404,9 @@ export default function Home() {
 
                 case "done":
                   setThinking(null);
+                  if (data.hint) {
+                    setChat((p) => [...p, { role: "nova", text: `💡 ${data.hint}` }]);
+                  }
                   break;
 
                 case "error":

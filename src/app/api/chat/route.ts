@@ -314,47 +314,58 @@ export async function POST(req: NextRequest) {
                   cost: USER_COST,
                 });
 
-                // Detect repo creation from response text + GitHub API
+                // Detect repo creation
                 const githubAgent = GITHUB_AGENTS[agentName];
                 if (githubAgent) {
-                  const mentionsRepo = /repo|project|created|creating|check out|scaffold|commit/i.test(response);
+                  const mentionsRepo = /repo|project|created|creating|check out|scaffold|commit|stand by|building/i.test(response);
                   const hasCodeBlocks = /```|file:/i.test(response);
 
                   if (mentionsRepo || hasCodeBlocks) {
-                    // Wait for ElizaOS CREATE_PROJECT action to complete
-                    await new Promise(r => setTimeout(r, 5000));
+                    // Wait for ElizaOS CREATE_PROJECT action to finish
+                    send("progress", { agent: delegation.delegate, message: "pushing to GitHub..." });
+                    await new Promise(r => setTimeout(r, 10000));
 
-                    // Try GitHub API with token
+                    // Try GitHub API with token — check last 3 repos
                     let repoFound = false;
                     if (githubAgent.token) {
-                      try {
-                        const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=1`, {
-                          headers: { Authorization: `Bearer ${githubAgent.token}` },
-                        });
-                        const repos = await reposRes.json();
-                        if (Array.isArray(repos) && repos.length > 0) {
-                          const latest = repos[0];
-                          const createdAt = new Date(latest.created_at).getTime();
-                          if (Date.now() - createdAt < 300000) {
-                            send("action", {
-                              type: "repo_created",
-                              agent: delegation.delegate,
-                              repo: latest.full_name,
-                              url: `https://github.com/${latest.full_name}`,
-                            });
-                            repoFound = true;
+                      for (let check = 0; check < 3 && !repoFound; check++) {
+                        try {
+                          const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=3`, {
+                            headers: { Authorization: `Bearer ${githubAgent.token}` },
+                          });
+                          const repos = await reposRes.json();
+                          if (Array.isArray(repos)) {
+                            for (const repo of repos) {
+                              const createdAt = new Date(repo.created_at).getTime();
+                              if (Date.now() - createdAt < 300000) {
+                                send("action", {
+                                  type: "repo_created",
+                                  agent: delegation.delegate,
+                                  repo: repo.full_name,
+                                  url: `https://github.com/${repo.full_name}`,
+                                });
+                                repoFound = true;
+                                break;
+                              }
+                            }
                           }
-                        }
-                      } catch {}
+                        } catch {}
+                        if (!repoFound) await new Promise(r => setTimeout(r, 5000));
+                      }
                     }
 
-                    // Fallback: always show repo link if agent mentioned creating one
+                    // Fallback: extract repo name from response text
                     if (!repoFound && mentionsRepo) {
+                      const repoNameMatch = response.match(/(?:solanacloud-\w+\/[\w-]+)/i)
+                        || response.match(/(?:repo|repository)\s+(?:named?\s+)?["']?([\w-]+)/i);
+                      const repoName = repoNameMatch
+                        ? (repoNameMatch[0].includes('/') ? repoNameMatch[0] : `${githubAgent.user}/${repoNameMatch[1]}`)
+                        : `${githubAgent.user}/latest`;
                       send("action", {
                         type: "repo_created",
                         agent: delegation.delegate,
-                        repo: `${githubAgent.user}`,
-                        url: `https://github.com/${githubAgent.user}`,
+                        repo: repoName,
+                        url: `https://github.com/${repoName}`,
                       });
                     }
                   }
@@ -364,7 +375,7 @@ export async function POST(req: NextRequest) {
               }
             }
 
-            send("done", { status: "complete" });
+            send("done", { status: "complete", hint: "Say 'deploy' to deploy the repos to production" });
           } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : "Unknown error";
             send("error", { error: errorMsg });
