@@ -412,6 +412,8 @@ async function executeDelegations(delegations: Delegation[], originalMessage: st
     task: string;
     response: string;
     error?: string;
+    balance?: number;
+    cost?: number;
   }> = [];
 
   for (const delegation of delegations) {
