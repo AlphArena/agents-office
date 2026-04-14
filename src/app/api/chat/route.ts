@@ -314,43 +314,49 @@ export async function POST(req: NextRequest) {
                   cost: USER_COST,
                 });
 
-                // Check if agent created a repo — try GitHub API with token
+                // Detect repo creation from response text + GitHub API
                 const githubAgent = GITHUB_AGENTS[agentName];
-                if (githubAgent?.token) {
-                  await new Promise(r => setTimeout(r, 3000));
-                  try {
-                    const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=1`, {
-                      headers: { Authorization: `Bearer ${githubAgent.token}` },
-                    });
-                    const repos = await reposRes.json();
-                    if (Array.isArray(repos) && repos.length > 0) {
-                      const latest = repos[0];
-                      const createdAt = new Date(latest.created_at).getTime();
-                      if (Date.now() - createdAt < 180000) {
-                        send("action", {
-                          type: "repo_created",
-                          agent: delegation.delegate,
-                          repo: latest.full_name,
-                          url: `https://github.com/${latest.full_name}`,
+                if (githubAgent) {
+                  const mentionsRepo = /repo|project|created|creating|check out|scaffold|commit/i.test(response);
+                  const hasCodeBlocks = /```|file:/i.test(response);
+
+                  if (mentionsRepo || hasCodeBlocks) {
+                    // Wait for ElizaOS CREATE_PROJECT action to complete
+                    await new Promise(r => setTimeout(r, 5000));
+
+                    // Try GitHub API with token
+                    let repoFound = false;
+                    if (githubAgent.token) {
+                      try {
+                        const reposRes = await fetch(`https://api.github.com/user/repos?sort=created&per_page=1`, {
+                          headers: { Authorization: `Bearer ${githubAgent.token}` },
                         });
-                      }
-                    }
-                  } catch {
-                    // GitHub API failed — check ElizaOS logs for repo creation
-                    try {
-                      const logsRes = await fetch(`http://72.62.176.85:3003/api/agents`);
-                      if (logsRes.ok) {
-                        // If agent mentioned creating a repo/project in response
-                        if (/repo|project|created|creating|check out/i.test(response)) {
-                          send("action", {
-                            type: "repo_created",
-                            agent: delegation.delegate,
-                            repo: `solanacloud-${agentName}/new-project`,
-                            url: `https://github.com/solanacloud-${agentName}`,
-                          });
+                        const repos = await reposRes.json();
+                        if (Array.isArray(repos) && repos.length > 0) {
+                          const latest = repos[0];
+                          const createdAt = new Date(latest.created_at).getTime();
+                          if (Date.now() - createdAt < 300000) {
+                            send("action", {
+                              type: "repo_created",
+                              agent: delegation.delegate,
+                              repo: latest.full_name,
+                              url: `https://github.com/${latest.full_name}`,
+                            });
+                            repoFound = true;
+                          }
                         }
-                      }
-                    } catch {}
+                      } catch {}
+                    }
+
+                    // Fallback: always show repo link if agent mentioned creating one
+                    if (!repoFound && mentionsRepo) {
+                      send("action", {
+                        type: "repo_created",
+                        agent: delegation.delegate,
+                        repo: `${githubAgent.user}`,
+                        url: `https://github.com/${githubAgent.user}`,
+                      });
+                    }
                   }
                 }
               } else {
