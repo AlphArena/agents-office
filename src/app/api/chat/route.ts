@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { connectDB } from "@/lib/db";
+import { User, Transaction } from "@/lib/models";
+import { payAgent } from "@/lib/pay-agent";
+import { USER_COST, AGENT_PAY } from "@/lib/agent-wallets";
 
 const API_BASE = "http://72.62.176.85:3003";
 const USER_ID = "11111111-1111-1111-1111-111111111111";
@@ -40,10 +44,23 @@ async function getAgentIdByName(name: string): Promise<string | null> {
 }
 
 export async function POST(req: NextRequest) {
-  const { message, agentId, channelId } = await req.json();
+  const { message, agentId, channelId, walletAddress } = await req.json();
 
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
+  }
+
+  // Check user balance if wallet provided
+  if (walletAddress) {
+    await connectDB();
+    const user = await User.findOne({ walletAddress });
+    if (!user || user.balance < USER_COST) {
+      return NextResponse.json({
+        error: "Insufficient credits",
+        balance: user?.balance || 0,
+        required: USER_COST,
+      }, { status: 402 });
+    }
   }
 
   const cid = channelId || crypto.randomUUID();
@@ -111,6 +128,41 @@ export async function POST(req: NextRequest) {
   const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
   const agentResponse = await callAgent(targetId, taskMsg, agentCid);
 
+  // Deduct credits + pay agent
+  let newBalance: number | undefined;
+  let agentPaymentTx: string | undefined;
+  if (walletAddress && agentResponse) {
+    try {
+      await connectDB();
+      const user = await User.findOneAndUpdate(
+        { walletAddress, balance: { $gte: USER_COST } },
+        { $inc: { balance: -USER_COST, totalSpent: USER_COST } },
+        { new: true }
+      );
+      if (user) {
+        newBalance = user.balance;
+        await Transaction.create({
+          walletAddress,
+          type: "spend",
+          amount: USER_COST,
+          agentName: delegation.delegate,
+          task: delegation.task || message,
+        });
+
+        // Pay the agent on-chain (async, don't block response)
+        payAgent(delegation.delegate).then((result) => {
+          if (result.success) {
+            console.log(`Paid ${delegation!.delegate}: ${result.txSignature}`);
+          } else {
+            console.error(`Failed to pay ${delegation!.delegate}: ${result.error}`);
+          }
+        });
+      }
+    } catch {
+      // Don't fail the response if billing fails
+    }
+  }
+
   return NextResponse.json({
     text: atlasText,
     agentName: "Atlas",
@@ -119,5 +171,8 @@ export async function POST(req: NextRequest) {
     delegatedTo: delegation.delegate.toLowerCase(),
     delegatedAgentId: targetId,
     delegatedResponse: agentResponse || "No response from agent",
+    balance: newBalance,
+    cost: USER_COST,
+    agentPay: AGENT_PAY,
   });
 }
