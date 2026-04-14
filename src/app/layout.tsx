@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import WalletProvider from "@/components/WalletProvider";
 
 const sans = Inter({
   variable: "--font-sans",
@@ -29,7 +30,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable} h-full`}>
       <body className="min-h-full flex flex-col bg-[#0c0c14] text-zinc-100 antialiased">
-        {children}
+        <WalletProvider>{children}</WalletProvider>
       </body>
     </html>
   );

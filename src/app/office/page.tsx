@@ -1,9 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useConnection } from "@solana/wallet-adapter-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
+import Link from "next/link";
 import { AgentSprite, OrchestratorSprite, Desk, Chair, CoffeeMachine, ServerRack, Plant } from "@/components/PixelSprites";
+
+const WalletMultiButton = dynamic(
+  () => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton),
+  { ssr: false }
+);
 
 interface AgentDef {
   id: string; name: string; role: string; rate: number; spriteIndex: number;
@@ -97,18 +106,62 @@ function randomSig() {
 }
 
 export default function Home() {
+  const { publicKey, signMessage, connected } = useWallet();
+  const { connection } = useConnection();
   const [selected, setSelected] = useState<AgentDef | null>(null);
   const [agentStates, setAgentStates] = useState<Record<string, "idle" | "working" | "done">>({});
   const [agentTasks, setAgentTasks] = useState<Record<string, string>>({});
   const [bubbles, setBubbles] = useState<Record<string, string>>({});
   const [orchestratorBubble, setOrchestratorBubble] = useState("");
   const [payments, setPayments] = useState<Payment[]>([]);
-  const [balance, setBalance] = useState(1.0);
+  const [balance, setBalance] = useState(0);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [thinking, setThinking] = useState<string | null>(null);
   const [channelId, setChannelId] = useState(() => crypto.randomUUID());
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch balance when wallet connects
+  useEffect(() => {
+    if (!publicKey) {
+      setIsAuthenticated(false);
+      setBalance(0);
+      return;
+    }
+    fetch(`/api/balance?wallet=${publicKey.toBase58()}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setBalance(d.balance || 0);
+        setIsAuthenticated(true);
+      })
+      .catch(() => {});
+  }, [publicKey]);
+
+  // Auth with signature on first connect
+  useEffect(() => {
+    if (!publicKey || !signMessage || isAuthenticated) return;
+    const msg = `Sign in to Agents Office: ${publicKey.toBase58()}`;
+    signMessage(new TextEncoder().encode(msg))
+      .then(async (sig) => {
+        const bs58 = (await import("bs58")).default;
+        await fetch("/api/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            walletAddress: publicKey.toBase58(),
+            signature: bs58.encode(sig),
+            message: msg,
+          }),
+        });
+        // Refresh balance
+        const res = await fetch(`/api/balance?wallet=${publicKey.toBase58()}`);
+        const d = await res.json();
+        setBalance(d.balance || 0);
+        setIsAuthenticated(true);
+      })
+      .catch(() => {});
+  }, [publicKey, signMessage, isAuthenticated]);
 
   // Init all agents as idle
   useEffect(() => {
@@ -206,6 +259,10 @@ export default function Home() {
   async function handleChat() {
     const msg = chatInput.trim();
     if (!msg) return;
+    if (!connected || !publicKey) {
+      setChat((p) => [...p, { role: "nova", text: "Connect your wallet first" }]);
+      return;
+    }
     setChatInput("");
     setChat((p) => [...p, { role: "user", text: msg }]);
 
@@ -273,26 +330,54 @@ export default function Home() {
   return (
     <main className="flex-1 flex flex-col font-[family-name:var(--font-mono)] bg-[#1a1a2e] min-h-screen">
       {/* Nav */}
-      <nav className="flex items-center justify-between px-4 py-2 bg-[#0f0f1a] border-b border-[#2a2a3a] text-[11px]">
-        <div className="flex items-center gap-2 text-[#8b8ba0]">
-          <span className="text-sm">🏢</span>
-          <span className="text-white font-bold">AGENTS OFFICE</span>
-        </div>
-        <div className="flex items-center gap-3 text-[#5a5a6a]">
-          <div className="flex items-center gap-1.5 bg-[#1a1a2e] border border-[#2a2a3a] rounded px-2 py-0.5">
-            <span className="text-[9px] text-[#5a5a6a]">BAL</span>
-            <span className={`text-[11px] font-bold ${balance > 0.1 ? "text-emerald-400" : balance > 0 ? "text-[#fbbf24]" : "text-red-400"}`}>
-              {balance.toFixed(4)}
-            </span>
-            <span className="text-[8px] text-[#3a3a4a]">USDC</span>
-          </div>
-          <span className="hidden sm:flex items-center gap-1">
+      <nav className="flex items-center justify-between px-4 py-2.5 bg-[#0a0a12]/90 backdrop-blur-md border-b border-[#1e1e2e] text-[11px] sticky top-0 z-40">
+        {/* Left — Logo + status */}
+        <div className="flex items-center gap-3">
+          <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+            <span className="text-sm">🏢</span>
+            <span className="text-white font-bold tracking-tight">AGENTS OFFICE</span>
+          </Link>
+          <div className="hidden sm:flex items-center gap-1.5 text-[10px]">
+            <span className="text-[#3a3a4a]">|</span>
             <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-            <span className="text-[10px] text-emerald-400">
+            <span className="text-[#5a5a6a]">
               {agentDefs.filter((a) => agentStates[a.id] === "working").length} working
             </span>
+            <span className="text-[#3a3a4a]">·</span>
+            <span className="text-[#4a4a5a]">
+              {agentDefs.filter((a) => (agentStates[a.id] || "idle") === "idle").length} idle
+            </span>
+          </div>
+        </div>
+
+        {/* Right — Balance + credits + wallet + clock */}
+        <div className="flex items-center gap-2">
+          {/* Balance pill */}
+          <div className="flex items-center gap-1.5 bg-[#12121e] border border-[#1e1e2e] rounded-lg px-2.5 py-1">
+            <div className={`w-1.5 h-1.5 rounded-full ${balance > 100 ? "bg-emerald-500" : balance > 0 ? "bg-[#fbbf24]" : "bg-red-500"}`} />
+            <span className={`text-[11px] font-bold tabular-nums ${balance > 100 ? "text-emerald-400" : balance > 0 ? "text-[#fbbf24]" : "text-red-400"}`}>
+              {(balance / 1_000_000).toFixed(4)}
+            </span>
+            <span className="text-[8px] text-[#4a4a5a]">USDC</span>
+          </div>
+
+          {/* Credits button */}
+          <Link
+            href="/office/credits"
+            className="flex items-center gap-1 bg-[#fbbf24]/10 hover:bg-[#fbbf24]/20 border border-[#fbbf24]/20 text-[#fbbf24] px-2.5 py-1 rounded-lg text-[10px] font-semibold transition-colors"
+          >
+            <span>+</span>
+            <span className="hidden sm:inline">Load credits</span>
+            <span className="sm:hidden">$</span>
+          </Link>
+
+          {/* Wallet */}
+          <WalletMultiButton className="!bg-[#12121e] !text-[#8b8ba0] !text-[9px] !font-medium !rounded-lg !h-7 !px-2.5 !border !border-[#1e1e2e] hover:!border-[#3a3a4a] !transition-colors" />
+
+          {/* Clock */}
+          <span className="hidden sm:inline text-[10px] text-[#3a3a4a]">
+            <Clock />
           </span>
-          <Clock />
         </div>
       </nav>
 
@@ -543,12 +628,12 @@ export default function Home() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !thinking) handleChat(); }}
-                  placeholder={thinking ? `${thinking} is thinking...` : "build me a landing page..."}
-                  disabled={!!thinking}
+                  placeholder={!connected ? "connect wallet first..." : thinking ? `${thinking} is thinking...` : "build me a landing page..."}
+                  disabled={!!thinking || !connected}
                   className="flex-1 bg-[#1a1a2e] border border-[#2a2a3a] rounded px-2 py-1.5 text-[10px] text-white placeholder-[#3a3a4a] outline-none focus:border-[#fbbf24]/30 disabled:opacity-40"
                 />
                 <button onClick={handleChat}
-                  disabled={!!thinking}
+                  disabled={!!thinking || !connected}
                   className="bg-[#fbbf24] text-black px-2 py-1.5 rounded text-[9px] font-bold hover:bg-[#fbbf24]/80 disabled:opacity-40">
                   {thinking ? "..." : "GO"}
                 </button>
