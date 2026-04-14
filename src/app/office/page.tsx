@@ -229,33 +229,6 @@ export default function Home() {
     return data.text || "";
   }
 
-  // Instantly assign agents based on keywords (no LLM needed)
-  function quickAssign(msg: string) {
-    const lower = msg.toLowerCase();
-    const assignments: { id: string; task: string }[] = [];
-
-    if (/landing|page|frontend|ui|component|css|react/i.test(lower))
-      assignments.push({ id: "mia", task: "building frontend" });
-    if (/api|backend|server|database|endpoint/i.test(lower))
-      assignments.push({ id: "sam", task: "building API" });
-    if (/deploy|server|infra|docker|k8s/i.test(lower))
-      assignments.push({ id: "rex", task: "preparing deploy" });
-    if (/design|ux|wireframe|figma/i.test(lower))
-      assignments.push({ id: "luna", task: "designing UI" });
-    if (/audit|security|review/i.test(lower))
-      assignments.push({ id: "victor", task: "auditing code" });
-    if (/solidity|contract|web3|solana|token/i.test(lower))
-      assignments.push({ id: "zara", task: "writing contract" });
-    if (/roadmap|plan|story|sprint|product/i.test(lower))
-      assignments.push({ id: "alex", task: "planning project" });
-
-    // Always assign at least one
-    if (assignments.length === 0)
-      assignments.push({ id: "sam", task: "handling task" });
-
-    return assignments;
-  }
-
   async function handleChat() {
     const msg = chatInput.trim();
     if (!msg) return;
@@ -266,30 +239,24 @@ export default function Home() {
     setChatInput("");
     setChat((p) => [...p, { role: "user", text: msg }]);
 
-    // Instantly move agents to desks (no waiting for LLM)
-    const quickAgents = quickAssign(msg);
-    const names = quickAgents.map(a => {
-      const def = agentDefs.find(d => d.id === a.id);
-      return def?.name || a.id;
-    }).join(" + ");
-
-    setOrchestratorBubble(`→ ${names}`);
-    setTimeout(() => setOrchestratorBubble(""), 3000);
-    setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
-
-    for (const a of quickAgents) {
-      assignTask(a.id, a.task);
-    }
-
-    // Now call Atlas in background for the real response
     try {
-      setThinking("Atlas");
+      // Call Atlas — show "routing..." while Atlas decides
+      setThinking("Atlas is routing...");
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg, step: "atlas" }),
       });
       const atlasData = await atlasRes.json();
+
+      // Show which agents are working
+      if (atlasData.delegations?.length > 0) {
+        const names = atlasData.delegations.map((d: { delegate: string }) => d.delegate).join(", ");
+        setThinking(`${names} working...`);
+      }
+
+      // Brief delay to show the working state before results
+      await new Promise(r => setTimeout(r, 500));
       setThinking(null);
 
       showAtlasResults(atlasData);
@@ -304,21 +271,25 @@ export default function Home() {
     agentResponses?: { agent: string; task?: string; response: string; error?: string }[];
     text?: string;
   }) {
-    // Show Atlas delegation info
+    // Show Atlas delegation and move agents to desks
     if (data.delegations && data.delegations.length > 0) {
       const names = data.delegations.map((d) => d.delegate).join(" + ");
       setOrchestratorBubble(`→ ${names}`);
       setTimeout(() => setOrchestratorBubble(""), 3000);
       setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
+
+      // Move delegated agents to their desks immediately
+      for (const d of data.delegations) {
+        const agent = agentDefs.find((a) => a.name.toLowerCase() === d.delegate.toLowerCase());
+        if (agent) {
+          assignTask(agent.id, d.task?.slice(0, 30) || "working");
+        }
+      }
     }
 
-    // Show each agent's response
+    // Show each agent's response with their name as thinking indicator
     if (data.agentResponses) {
       for (const agentRes of data.agentResponses) {
-        const agent = agentDefs.find((a) => a.name.toLowerCase() === agentRes.agent.toLowerCase());
-        if (agent) {
-          assignTask(agent.id, agentRes.task?.slice(0, 30) || "working");
-        }
         const text = agentRes.error ? `Error: ${agentRes.error}` : agentRes.response;
         setChat((p) => [...p, { role: "agent", text, agentName: agentRes.agent }]);
       }
