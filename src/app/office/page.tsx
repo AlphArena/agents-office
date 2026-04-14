@@ -302,15 +302,19 @@ export default function Home() {
                 case "thinking":
                   if (data.status === "routing") {
                     setThinking("Atlas is routing...");
+                    setChat((p) => [...p, { role: "nova", text: "🧠 Atlas is analyzing your request..." }]);
                   } else if (data.status === "working") {
                     setThinking(`${data.agent} is working...`);
+                    setChat((p) => [...p, { role: "nova", text: `⚡ ${data.agent} started working: ${data.task || ""}` }]);
                     updateTaskStatus(data.agent, "working");
                     const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
                     if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
                   } else if (data.status === "waiting") {
                     setThinking(`Waiting before calling ${data.agent}...`);
+                    setChat((p) => [...p, { role: "nova", text: `⏳ Waiting before calling ${data.agent}...` }]);
                   } else if (data.status === "retrying") {
                     setThinking(`${data.agent} — retrying...`);
+                    setChat((p) => [...p, { role: "nova", text: `🔄 ${data.agent} — retrying...` }]);
                   }
                   break;
 
