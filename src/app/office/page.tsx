@@ -240,63 +240,91 @@ export default function Home() {
     setChat((p) => [...p, { role: "user", text: msg }]);
 
     try {
-      // Call Atlas — show "routing..." while Atlas decides
+      // Call Atlas with SSE streaming
       setThinking("Atlas is routing...");
       const atlasRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg, step: "atlas" }),
       });
-      const atlasData = await atlasRes.json();
 
-      // Show which agents are working
-      if (atlasData.delegations?.length > 0) {
-        const names = atlasData.delegations.map((d: { delegate: string }) => d.delegate).join(", ");
-        setThinking(`${names} working...`);
+      // Process SSE stream
+      const reader = atlasRes.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        setThinking(null);
+        setChat((p) => [...p, { role: "nova", text: "Error: no response stream" }]);
+        return;
       }
 
-      // Brief delay to show the working state before results
-      await new Promise(r => setTimeout(r, 500));
-      setThinking(null);
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      showAtlasResults(atlasData);
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let eventName = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventName = line.slice(7).trim();
+          } else if (line.startsWith("data: ") && eventName) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              switch (eventName) {
+                case "thinking":
+                  if (data.status === "routing") {
+                    setThinking("Atlas is routing...");
+                  } else if (data.status === "working") {
+                    setThinking(`${data.agent} is working...`);
+                    // Move agent to desk
+                    const agent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                    if (agent) assignTask(agent.id, data.task?.slice(0, 30) || "working");
+                  }
+                  break;
+
+                case "delegations": {
+                  const names = data.delegations.map((d: { delegate: string }) => d.delegate).join(" + ");
+                  setOrchestratorBubble(`→ ${names}`);
+                  setTimeout(() => setOrchestratorBubble(""), 3000);
+                  setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
+                  break;
+                }
+
+                case "agent_response":
+                  setChat((p) => [...p, { role: "agent", text: data.response, agentName: data.agent }]);
+                  break;
+
+                case "agent_error":
+                  setChat((p) => [...p, { role: "agent", text: `Error: ${data.error}`, agentName: data.agent }]);
+                  break;
+
+                case "done":
+                  setThinking(null);
+                  break;
+
+                case "error":
+                  setThinking(null);
+                  setChat((p) => [...p, { role: "nova", text: `Error: ${data.error}` }]);
+                  break;
+              }
+            } catch {}
+            eventName = "";
+          }
+        }
+      }
+      setThinking(null);
     } catch {
       setThinking(null);
       setChat((p) => [...p, { role: "nova", text: "Error: could not reach the agents" }]);
     }
   }
 
-  function showAtlasResults(data: {
-    delegations?: { delegate: string; task?: string }[];
-    agentResponses?: { agent: string; task?: string; response: string; error?: string }[];
-    text?: string;
-  }) {
-    // Show Atlas delegation and move agents to desks
-    if (data.delegations && data.delegations.length > 0) {
-      const names = data.delegations.map((d) => d.delegate).join(" + ");
-      setOrchestratorBubble(`→ ${names}`);
-      setTimeout(() => setOrchestratorBubble(""), 3000);
-      setChat((p) => [...p, { role: "nova", text: `Delegating to ${names}...` }]);
-
-      // Move delegated agents to their desks immediately
-      for (const d of data.delegations) {
-        const agent = agentDefs.find((a) => a.name.toLowerCase() === d.delegate.toLowerCase());
-        if (agent) {
-          assignTask(agent.id, d.task?.slice(0, 30) || "working");
-        }
-      }
-    }
-
-    // Show each agent's response with their name as thinking indicator
-    if (data.agentResponses) {
-      for (const agentRes of data.agentResponses) {
-        const text = agentRes.error ? `Error: ${agentRes.error}` : agentRes.response;
-        setChat((p) => [...p, { role: "agent", text, agentName: agentRes.agent }]);
-      }
-    } else if (data.text) {
-      setChat((p) => [...p, { role: "nova", text: data.text }]);
-    }
-  }
+  // showAtlasResults removed — streaming handles everything inline
 
   return (
     <main className="flex-1 flex flex-col font-[family-name:var(--font-mono)] bg-[#1a1a2e] min-h-screen">

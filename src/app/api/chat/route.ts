@@ -126,8 +126,81 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ text: text || "No response", agentId });
   }
 
-  // ── Atlas routing ──
+  // ── Atlas routing with streaming ──
   if (step === "atlas" || !step) {
+    const stream = step === "atlas"; // stream when called from frontend
+
+    if (stream) {
+      // SSE: send events as each agent responds
+      const encoder = new TextEncoder();
+      const readable = new ReadableStream({
+        async start(controller) {
+          function send(event: string, data: unknown) {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          }
+
+          try {
+            // 1. Atlas routing
+            send("thinking", { agent: "Atlas", status: "routing" });
+            const atlasCid = crypto.randomUUID();
+            const atlasRaw = await callAgent(ATLAS_ID, message, atlasCid);
+            const delegations = parseAtlasDelegations(atlasRaw);
+
+            if (delegations.length === 0) {
+              const fallbackAgent = routeByKeywords(message);
+              delegations.push({ delegate: fallbackAgent, task: message });
+            }
+
+            send("delegations", { delegations });
+
+            // 2. Call each agent and stream responses
+            for (const delegation of delegations) {
+              const agentName = delegation.delegate.toLowerCase();
+              const targetId = AGENT_IDS[agentName];
+
+              if (!targetId) {
+                send("agent_error", { agent: delegation.delegate, error: `Agent not found` });
+                continue;
+              }
+
+              send("thinking", { agent: delegation.delegate, status: "working", task: delegation.task });
+
+              try {
+                const agentCid = crypto.randomUUID();
+                const taskMsg = `Respond directly with the full answer, include all code if applicable. Do not delegate or generate images. Task: ${delegation.task || message}`;
+                const response = await callAgent(targetId, taskMsg, agentCid);
+                send("agent_response", {
+                  agent: delegation.delegate,
+                  agentId: targetId,
+                  task: delegation.task,
+                  response: response || "No response",
+                });
+              } catch (err: unknown) {
+                const errorMsg = err instanceof Error ? err.message : "Unknown error";
+                send("agent_error", { agent: delegation.delegate, error: errorMsg });
+              }
+            }
+
+            send("done", { status: "complete" });
+          } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : "Unknown error";
+            send("error", { error: errorMsg });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
+    // Non-streaming fallback
     const atlasCid = crypto.randomUUID();
     const atlasRaw = await callAgent(ATLAS_ID, message, atlasCid);
     const delegations = parseAtlasDelegations(atlasRaw);
