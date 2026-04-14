@@ -12,7 +12,13 @@ const usedSignatures = new Set<string>();
 
 // POST /api/credits — verify USDC deposit and add to balance
 export async function POST(req: NextRequest) {
-  const { walletAddress, txSignature, amount } = await req.json();
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const { walletAddress, txSignature } = body;
 
   if (!walletAddress || !txSignature) {
     return NextResponse.json({ error: "walletAddress and txSignature required" }, { status: 400 });
