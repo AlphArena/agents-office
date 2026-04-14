@@ -215,8 +215,36 @@ export async function POST(req: NextRequest) {
           }
 
           try {
-            // 1. Instant keyword routing (no LLM call — zero latency)
-            const delegations = routeByKeywords(message);
+            // 1. Atlas decides who to delegate to
+            send("thinking", { agent: "Atlas", status: "routing" });
+
+            let delegations: Delegation[] = [];
+
+            // Try Atlas LLM with 30s timeout + heartbeat
+            const atlasHeartbeat = setInterval(() => {
+              send("progress", { agent: "Atlas", message: "analyzing your request..." });
+            }, 5000);
+
+            try {
+              const atlasPromise = callAgent(ATLAS_ID, message, crypto.randomUUID());
+              const timeoutPromise = new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error("timeout")), 30000)
+              );
+              const atlasRaw = await Promise.race([atlasPromise, timeoutPromise]);
+              clearInterval(atlasHeartbeat);
+              delegations = parseAtlasDelegations(atlasRaw);
+              send("progress", { agent: "Atlas", message: "delegation decided" });
+            } catch {
+              clearInterval(atlasHeartbeat);
+              // Atlas timed out or failed — use keyword routing as fallback
+              send("progress", { agent: "Atlas", message: "using fast routing..." });
+            }
+
+            // Fallback to keyword routing if Atlas couldn't delegate
+            if (delegations.length === 0) {
+              delegations = routeByKeywords(message);
+            }
+
             send("delegations", { delegations });
 
             // 2. Call each agent SEQUENTIALLY with delay + retry
@@ -338,8 +366,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Non-streaming fallback — instant keyword routing
-    const delegations = routeByKeywords(message);
+    // Non-streaming fallback
+    let delegations: Delegation[] = [];
+    try {
+      const atlasRaw = await callAgent(ATLAS_ID, message, crypto.randomUUID());
+      delegations = parseAtlasDelegations(atlasRaw);
+    } catch {}
+    if (delegations.length === 0) delegations = routeByKeywords(message);
     const agentResponses = await executeDelegations(delegations, message, walletAddress);
 
     return NextResponse.json({
