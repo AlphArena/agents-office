@@ -357,6 +357,17 @@ export default function Home() {
                   updateTaskStatus(data.agent, "done");
                   const doneAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
                   if (doneAgent) finishTask(doneAgent.id);
+
+                  // If Rex deployed something, try to detect the URL
+                  if (data.agent.toLowerCase() === "rex" && data.response) {
+                    const portMatch = data.response.match(/(?:port|:)\s*(\d{4,5})/i);
+                    if (portMatch) {
+                      setChat((p) => [...p, {
+                        role: "nova",
+                        text: `🚀 Live at: http://72.62.176.85:${portMatch[1]}`,
+                      }]);
+                    }
+                  }
                   break;
                 }
 
