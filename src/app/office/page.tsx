@@ -229,14 +229,14 @@ export default function Home() {
       setBalance((b) => Math.max(0, parseFloat((b - agent.rate).toFixed(4))));
     }, 1500);
 
-    // Finish task after 8-15s
-    const duration = 8000 + Math.random() * 7000;
-    setTimeout(() => {
-      setAgentStates((p) => ({ ...p, [agentId]: "idle" }));
-      setAgentTasks((p) => { const n = { ...p }; delete n[agentId]; return n; });
-      setBubbles((p) => ({ ...p, [agentId]: "done ✓" }));
-      setTimeout(() => setBubbles((p) => { const n = { ...p }; delete n[agentId]; return n; }), 2000);
-    }, duration);
+    // Agent stays at desk until finishTask is called
+  }
+
+  function finishTask(agentId: string) {
+    setAgentStates((p) => ({ ...p, [agentId]: "idle" }));
+    setAgentTasks((p) => { const n = { ...p }; delete n[agentId]; return n; });
+    setBubbles((p) => ({ ...p, [agentId]: "done ✓" }));
+    setTimeout(() => setBubbles((p) => { const n = { ...p }; delete n[agentId]; return n; }), 2000);
   }
 
   const [sageContext, setSageContext] = useState<string | null>(null);
@@ -327,15 +327,21 @@ export default function Home() {
                   break;
                 }
 
-                case "agent_response":
+                case "agent_response": {
                   setChat((p) => [...p, { role: "agent", text: data.response, agentName: data.agent }]);
                   updateTaskStatus(data.agent, "done");
+                  const doneAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                  if (doneAgent) finishTask(doneAgent.id);
                   break;
+                }
 
-                case "agent_error":
+                case "agent_error": {
                   setChat((p) => [...p, { role: "agent", text: `Error: ${data.error}`, agentName: data.agent }]);
                   updateTaskStatus(data.agent, "error");
+                  const errAgent = agentDefs.find((a) => a.name.toLowerCase() === data.agent.toLowerCase());
+                  if (errAgent) finishTask(errAgent.id);
                   break;
+                }
 
                 case "action":
                   if (data.type === "repo_created") {
