@@ -162,10 +162,10 @@ function parseAtlasDelegations(response: string): Delegation[] {
     if (results.length > 0) return results;
   } catch {}
 
-  // Find agent name in prose — use original user message as task, not Atlas prose
+  // Find agent name in prose — never use Atlas prose as task
   const nameMatch = response.match(/\b(Rex|Luna|Victor|Mia|Sam|Alex|Zara)\b/i);
   if (nameMatch) {
-    return [{ delegate: nameMatch[1], task: "Handle the task" }];
+    return [{ delegate: nameMatch[1], task: "__USE_ORIGINAL_REQUEST__" }];
   }
 
   return [];
@@ -236,7 +236,8 @@ export async function POST(req: NextRequest) {
     const lower = message.toLowerCase();
     const hasAgent = (name: string) => delegations.some(d => d.delegate.toLowerCase() === name);
 
-    const needsFrontend = /landing|page|frontend|ui|website|css|html|react|component/i.test(lower);
+    const isDeployOnly = /^(deploy|deploya|desplega)\b/i.test(lower.trim());
+    const needsFrontend = !isDeployOnly && /landing|page|frontend|ui|website|css|html|react|component/i.test(lower);
     const needsBackend = /api|backend|endpoint|catalog|database|rest|graphql|server/i.test(lower);
     const needsDeploy = /deploy|deploya|desplega|production|infrastructure|docker/i.test(lower);
     const needsWeb3 = /block\s*chain|blockchain|blockch|solidity|solana|smart\s*contract|web3|defi|token|anchor|crypto/i.test(lower);
@@ -262,6 +263,17 @@ export async function POST(req: NextRequest) {
       delegations.push({ delegate: "Alex", task: `Plan the project. User request: ${message}` });
     }
 
+    // Ensure every task includes the original user request
+    for (const d of delegations) {
+      if (d.task === "__USE_ORIGINAL_REQUEST__" || !d.task || d.task.length < 10) {
+        d.task = message;
+      }
+      // Always append original request if not present
+      if (!d.task.toLowerCase().includes(message.toLowerCase().slice(0, 20))) {
+        d.task = `${d.task}. Original request: ${message}`;
+      }
+    }
+
     return NextResponse.json({ delegations });
   }
 
@@ -271,9 +283,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "agentId is required" }, { status: 400 });
     }
 
-    const taskMsg = `Write the complete code for: ${task || message}
+    // Determine the agent's role for role-specific instructions
+    const agentName = Object.entries(AGENT_IDS).find(([, id]) => id === agentId)?.[0] || "agent";
+    const isRex = agentName === "rex";
 
-Respond with ONLY code. No questions. No asking for details. Use sample data if needed. Start writing code immediately.`;
+    const taskMsg = isRex
+      ? `Deploy the EXISTING project to production. Do NOT create a new project. Do NOT explain Kubernetes. Just deploy and return the result. Task: ${task || message}`
+      : `The user asked: "${message}"
+
+Your task: ${task || message}
+
+CRITICAL RULES:
+1. Your output MUST be about "${message}" — if user asked for "landing de perros", build a DOG landing page, NOT a counter or random template
+2. Write complete code with real content related to the request
+3. No questions. No asking for details. Use realistic sample data
+4. Start with code immediately`;
 
     // SSE stream for a single agent execution
     const encoder = new TextEncoder();
@@ -284,7 +308,6 @@ Respond with ONLY code. No questions. No asking for details. Use sample data if 
         }
 
         try {
-          const agentName = Object.entries(AGENT_IDS).find(([, id]) => id === agentId)?.[0] || "agent";
           const displayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
 
           send("thinking", { agent: displayName, status: "working", task });
@@ -421,8 +444,33 @@ Respond with ONLY code. No questions. No asking for details. Use sample data if 
     // Victor reviews locally — the x402 LLM is too weak for reliable reviews
     const hasCode = /```|file:|function |const |import |class |def |app\./i.test(message);
 
+    // Extract the original user request from the review summary
+    const originalRequestMatch = message.match(/Original request: (.+?)(?:\n|$)/i)
+      || message.match(/User request: (.+?)(?:\n|$)/i);
+    const originalRequest = originalRequestMatch?.[1]?.toLowerCase() || "";
+
     // Build automated review
     const issues: string[] = [];
+
+    // ── Relevance check: does the code match what the user asked for? ──
+    if (originalRequest && hasCode) {
+      const codeContent = message.toLowerCase();
+      // Extract key words from user request (skip common words)
+      const keyWords = originalRequest.split(/\s+/).filter((w: string) =>
+        w.length > 3 && !["hazme","hacer","haz","una","con","para","please","build","make","create","the","and","with"].includes(w)
+      );
+      const relevantWords = keyWords.filter((w: string) => codeContent.includes(w));
+      if (keyWords.length > 0 && relevantWords.length === 0) {
+        issues.push(`RELEVANCE: Code does not match the user request "${originalRequest}". The output should be about: ${keyWords.join(", ")}`);
+      }
+
+      // Check for generic templates that ignore the request
+      if (/counter|todo.?list|hello.?world/i.test(codeContent) && !/counter|todo|hello/i.test(originalRequest)) {
+        issues.push("RELEVANCE: Generic template detected (counter/todo/hello world) — code should be specific to the user's request");
+      }
+    }
+
+    // ── Security checks ──
     if (/eval\(|innerHTML|dangerouslySetInnerHTML/i.test(message)) issues.push("XSS risk: eval/innerHTML/dangerouslySetInnerHTML detected");
     if (/password|secret|api.?key|private.?key/i.test(message) && !/process\.env|env\./i.test(message)) issues.push("Hardcoded secrets detected — use environment variables");
     if (/SELECT.*\+.*req\.|query\s*\(/i.test(message) && !/\$\d|\?/i.test(message)) issues.push("Potential SQL injection — use parameterized queries");
@@ -431,7 +479,9 @@ Respond with ONLY code. No questions. No asking for details. Use sample data if 
     if (/console\.log/i.test(message)) issues.push("Console.log statements left in code — remove for production");
     if (!hasCode) issues.push("No code was provided by the agents");
 
-    const verdict = issues.length > 2 ? "NEEDS CHANGES" : "APPROVED";
+    // Relevance issues are critical — always reject
+    const hasRelevanceIssue = issues.some(i => i.startsWith("RELEVANCE"));
+    const verdict = hasRelevanceIssue ? "NEEDS CHANGES" : issues.length > 2 ? "NEEDS CHANGES" : "APPROVED";
     const reviewResponse = issues.length > 0
       ? `${verdict}\n\n${issues.map((issue, i) => `${i + 1}. ${issue}`).join("\n")}`
       : "APPROVED — code looks clean, no issues detected.";
