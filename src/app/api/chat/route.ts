@@ -263,6 +263,20 @@ export async function POST(req: NextRequest) {
       delegations.push({ delegate: "Alex", task: `Plan the project. User request: ${message}` });
     }
 
+    // Filter out agents that don't match the request
+    // Only keep agents whose domain is relevant to what the user asked
+    const relevantAgents = new Set<string>();
+    if (needsFrontend) relevantAgents.add("mia");
+    if (needsBackend) relevantAgents.add("sam");
+    if (needsDeploy) relevantAgents.add("rex");
+    if (needsWeb3) relevantAgents.add("zara");
+    if (needsDesign) relevantAgents.add("luna");
+    if (needsPM) relevantAgents.add("alex");
+    // If no specific domain detected, keep all (general request)
+    if (relevantAgents.size > 0) {
+      delegations = delegations.filter(d => relevantAgents.has(d.delegate.toLowerCase()));
+    }
+
     // Ensure every task includes the original user request
     for (const d of delegations) {
       if (d.task === "__USE_ORIGINAL_REQUEST__" || !d.task || d.task.length < 10) {
