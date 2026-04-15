@@ -228,16 +228,20 @@ export async function POST(req: NextRequest) {
     let delegations: Delegation[] = [];
 
     try {
-      const atlasRaw = await callAgent(ATLAS_ID, message, crypto.randomUUID());
+      // Send clean message to Atlas (without session context that confuses routing)
+      const atlasMessage = message.replace(/\[Session context:[\s\S]*?\]/, "").trim();
+      const atlasRaw = await callAgent(ATLAS_ID, atlasMessage, crypto.randomUUID());
       delegations = parseAtlasDelegations(atlasRaw);
     } catch {}
 
     // Post-process: detect missing agents for multi-agent tasks
-    const lower = message.toLowerCase();
+    // Strip session context to avoid false keyword matches from previous tasks
+    const cleanMessage = message.replace(/\[Session context:[\s\S]*?\]/, "").trim();
+    const lower = cleanMessage.toLowerCase();
     const hasAgent = (name: string) => delegations.some(d => d.delegate.toLowerCase() === name);
 
     const isDeployOnly = /^(deploy|deploya|desplega)\b/i.test(lower.trim());
-    const needsFrontend = !isDeployOnly && /landing|page|frontend|ui|website|css|html|react|component/i.test(lower);
+    const needsFrontend = !isDeployOnly && /landing|page|frontend|\bui\b|website|\bcss\b|\bhtml\b|react|component/i.test(lower);
     const needsBackend = /api|backend|endpoint|catalog|database|rest|graphql|server/i.test(lower);
     const needsDeploy = /deploy|deploya|desplega|production|infrastructure|docker/i.test(lower);
     const needsWeb3 = /block\s*chain|blockchain|blockch|solidity|solana|smart\s*contract|web3|defi|token|anchor|crypto/i.test(lower);
@@ -264,7 +268,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Filter out agents that don't match the request
-    // Only keep agents whose domain is relevant to what the user asked
     const relevantAgents = new Set<string>();
     if (needsFrontend) relevantAgents.add("mia");
     if (needsBackend) relevantAgents.add("sam");
@@ -272,10 +275,12 @@ export async function POST(req: NextRequest) {
     if (needsWeb3) relevantAgents.add("zara");
     if (needsDesign) relevantAgents.add("luna");
     if (needsPM) relevantAgents.add("alex");
-    // If no specific domain detected, keep all (general request)
+
+    const beforeCount = delegations.length;
     if (relevantAgents.size > 0) {
       delegations = delegations.filter(d => relevantAgents.has(d.delegate.toLowerCase()));
     }
+    console.log(`[ATLAS] Filter: ${beforeCount} → ${delegations.length} agents. Relevant: [${[...relevantAgents].join(",")}]`);
 
     // Ensure every task includes the original user request
     for (const d of delegations) {
