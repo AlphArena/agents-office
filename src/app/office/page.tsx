@@ -517,9 +517,11 @@ export default function Home() {
       setThinking(null);
       setOrchestratorBubble("");
       setChat((p) => [...p, { role: "nova", text: "💡 All done! Say 'deploy' to deploy to production" }]);
-    } catch {
+    } catch (err) {
       setThinking(null);
-      setChat((p) => [...p, { role: "nova", text: "Error: could not reach the agents" }]);
+      const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      console.error("Agent error:", err);
+      setChat((p) => [...p, { role: "nova", text: `Error: ${errorMsg}` }]);
     }
   }
 
